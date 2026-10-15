@@ -281,6 +281,47 @@ def test_tempo_reaches_time_signature():
     assert t.notes[0].time_sig._tempo == ((1, 4), 120, '')
 
 
+# --- accidentals within a bar ------------------------------------------------
+
+def pitches(body, **fields):
+    return [n.pitch.abs_value for n in tune(body, **fields).notes]
+
+
+@pytest.mark.parametrize('body, fields, expected', [
+    ('^F F =F F | F', dict(K='D'), [6, 6, 5, 5, 6]),
+    ('c ^c c | c', dict(K='G'), [12, 13, 13, 12]),
+    ('=F F | F', dict(K='D'), [5, 5, 6]),
+    ('^^F F _F F', dict(), [7, 7, 4, 4]),
+    ('^F f | f', dict(), [6, 18, 17]),                 # default: all octaves
+    ('^F f | f', dict(I='propagate-accidentals octave'), [6, 17, 17]),
+    ('^F F', dict(I='propagate-accidentals not'), [6, 5]),
+    ('^F F G ^G G', dict(), [6, 6, 7, 8, 8]),
+    ('^F F |1 F :|2 F', dict(), [6, 6, 5, 5]),         # endings are bar lines
+])
+def test_accidental_propagation(body, fields, expected):
+    assert pitches(body, **fields) == expected
+
+
+def test_propagate_directive_as_stylesheet_line():
+    t = pyabc.Tune(abc='X:1\nT:t\n%%propagate-accidentals not\nK:C\n^F F\n')
+    assert [n.pitch.abs_value for n in t.notes] == [6, 5]
+
+
+@pytest.mark.parametrize('body, fields, expected', [
+    ('^F- | F F', dict(), [6, 6, 5]),                   # tie carries over the bar line
+    ('^F- | F', dict(I='propagate-accidentals not'), [6, 6]),
+    ('^F- | G F', dict(), [6, 7, 5]),                    # tie only to the same note
+    ('^F- | f', dict(), [6, 17]),                        # same note means same octave
+    ('_B2- | B2 B', dict(K='G'), [10, 10, 11]),
+])
+def test_tie_carries_accidental(body, fields, expected):
+    assert pitches(body, **fields) == expected
+
+
+def test_tie_flag():
+    assert [n.tie for n in tune('A-B A- B A B').notes] == [True, False, True, False, False, False]
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}

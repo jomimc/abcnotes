@@ -225,13 +225,16 @@ class Pitch(object):
             # An explicit accidental on the note (^ ^^ = _ __) takes priority;
             # otherwise the key signature supplies the accidental for the letter.
             letter = value.note.upper()
-            if value.accidental is None:
+            accidental = value.accidental
+            if accidental is None:
+                accidental = value.bar_accidental    # carried from earlier in the bar
+            if accidental is None:
                 acc = value.key.accidentals.get(letter, '')       # '#', 'b' or ''
                 self._name = letter + acc
                 self._value = pitch_values[letter] + accidental_values[acc]
             else:
                 self._name = value.note.capitalize()
-                self._value = pitch_values[letter] + note_accidental_values[value.accidental]
+                self._value = pitch_values[letter] + note_accidental_values[accidental]
 
             assert octave is None
             self._octave = value.octave
@@ -429,14 +432,16 @@ class Token(object):
 
 
 class Note(Token):
-    def __init__(self, key, time, note, accidental, octave, num, denom, **kwds):
+    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, **kwds):
         Token.__init__(self, **kwds)
         self.key = key
         self.time_sig = time
         self.note = note
-        self.accidental = accidental
+        self.accidental = accidental          # written on this note, or None
+        self.bar_accidental = bar_accidental  # in force from earlier in the bar, or None
         self.octave = octave
         self._length = (num, denom)
+        self.tie = False                      # tied to the following note
 
     @property
     def pitch(self):
@@ -690,6 +695,18 @@ class Tune(object):
         tempo = self.header.get('tempo', None)
         time_sig = TimeSignature(meter, unit, tempo)
 
+        # An accidental lasts until the end of the bar (standard 4.2). By
+        # default it applies to the note letter in every octave ("pitch");
+        # I:propagate-accidentals may select "octave" or "not" (11.3).
+        propagate = 'pitch'
+        for name, value in getattr(self, 'fields', []):
+            if name != 'instruction':
+                continue
+            m = re.match(r'propagate-accidentals\s+(not|octave|pitch)', value)
+            if m is not None:
+                propagate = m.group(1)
+        bar_acc = {}
+        prev_note = None
 
         tokens = []
         for i,line in enumerate(tune):
@@ -735,8 +752,23 @@ class Tune(object):
 
                     num, denom = note_length(g['num'], g['slash'], g['den'])
 
+                    # accidental in force from earlier in the bar, or carried
+                    # over a tie from the previous note
+                    acc_key = g['note'].upper() if propagate == 'pitch' else (g['note'], octave)
+                    bar_accidental = None
+                    if g['acc'] is not None:
+                        if propagate != 'not':
+                            bar_acc[acc_key] = g['acc']
+                    else:
+                        bar_accidental = bar_acc.get(acc_key)
+                        if bar_accidental is None and prev_note is not None and prev_note.tie \
+                                and (prev_note.note, prev_note.octave) == (g['note'], octave):
+                            bar_accidental = prev_note.accidental or prev_note.bar_accidental
+
                     tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
-                        octave=octave, num=num, denom=denom, line=i, char=j, text=m.group()))
+                        octave=octave, num=num, denom=denom, bar_accidental=bar_accidental,
+                        line=i, char=j, text=m.group()))
+                    prev_note = tokens[-1]
 
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
@@ -753,6 +785,7 @@ class Tune(object):
                         tokens.append(ChordBracket(line=i, char=j, text=m.group()))
                     else:
                         tokens.append(Beam(line=i, char=j, text=m.group()))
+                        bar_acc = {}
                     j += m.end()
                     continue
 
@@ -798,6 +831,11 @@ class Tune(object):
                 # Tie
                 if part[0] == '-':
                     tokens.append(Tie(line=i, char=j, text=part[0]))
+                    k = len(tokens) - 2
+                    while k >= 0 and isinstance(tokens[k], Space):
+                        k -= 1
+                    if k >= 0 and isinstance(tokens[k], Note):
+                        tokens[k].tie = True
                     j += 1
                     continue
 
