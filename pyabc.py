@@ -340,7 +340,7 @@ def parse_meter(meter):
     """Convert a meter string like "6/8", "C", "C|", "(2+3)/8" or "none"
     to a (numerator, denominator) tuple, or None for free meter.
     """
-    meter = meter.strip()
+    meter = re.sub(r'\s+', '', meter)
     if meter in ('none', 'free', ''):
         return None
     if meter == 'C':
@@ -374,9 +374,28 @@ def parse_tempo(tempo):
 
 class TimeSignature(object):
     def __init__(self, meter, unit_len, tempo=None):
+        self._fields = (meter, unit_len, tempo)   # as written, for update()
         self._meter = parse_meter(meter)
-        self._unit_len = [int(x) for x in unit_len.split('/')]
+        self._unit_len = [int(x) for x in (unit_len.strip() + '/1').split('/')[:2]]
         self._tempo = parse_tempo(tempo) if tempo is not None else None
+
+    @property
+    def unit_len(self):
+        """Unit note length as a fraction of a whole note."""
+        return self._unit_len[0] / self._unit_len[1]
+
+    def update(self, field, value):
+        """Return (meter, unit_len, tempo) strings with one field replaced by
+        the value of an M:, L: or Q: field met in the tune body.
+        """
+        meter, unit_len, tempo = self._fields
+        if field == 'M':
+            meter = value.strip()
+        elif field == 'L':
+            unit_len = value.strip()
+        elif field == 'Q':
+            tempo = value.strip()
+        return meter, unit_len, tempo
 
     def __repr__(self):
         if self._meter is None:
@@ -477,7 +496,13 @@ class Note(Token):
 
     @property
     def duration(self):
+        """Length in units of the unit note length (L:)."""
         return self.length[0] / self.length[1]
+
+    @property
+    def abs_duration(self):
+        """Length as a fraction of a whole note."""
+        return self.duration * self.time_sig.unit_len
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this note.
@@ -552,15 +577,26 @@ class InlineField(Token):
     pass
 
 class Rest(Token):
-    def __init__(self, symbol, num, denom, **kwds):
+    def __init__(self, symbol, num, denom, time=None, **kwds):
         # char==X or Z means length is in measures
         Token.__init__(self, **kwds)
         self.symbol = symbol
+        self.time_sig = time
         self.length = (int(num) if num is not None else 1, int(denom) if denom is not None else 1)
 
     @property
     def duration(self):
+        """Length in units of the unit note length (L:), or in measures
+        for Z and X."""
         return self.length[0] / self.length[1]
+
+    @property
+    def abs_duration(self):
+        """Length as a fraction of a whole note."""
+        meter = self.time_sig._meter
+        if self.symbol in 'XZ' and meter is not None:
+            return self.duration * meter[0] / meter[1]
+        return self.duration * self.time_sig.unit_len
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this rest.
@@ -735,6 +771,11 @@ class Tune(object):
 
             if len(line) >= 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
                 tokens.append(BodyField(line=i, char=0, text=line))
+                if line[0] == 'K':
+                    key = Key(line[2:], base=key)
+                elif line[0] in 'MLQ':
+                    meter, unit, tempo = time_sig.update(line[0], line[2:])
+                    time_sig = TimeSignature(meter, unit, tempo)
                 continue
 
             pending_dots = None
@@ -749,6 +790,9 @@ class Tune(object):
                     if m is not None:
                         if m.group()[1] == 'K':
                             key = Key(m.group()[3:-1], base=key)
+                        elif m.group()[1] in 'MLQ':
+                            meter, unit, tempo = time_sig.update(m.group()[1], m.group()[3:-1])
+                            time_sig = TimeSignature(meter, unit, tempo)
 
                         tokens.append(InlineField(line=i, char=j, text=m.group()))
                         j += m.end()
@@ -827,7 +871,7 @@ class Tune(object):
                 if m is not None:
                     g = m.groupdict()
                     num, denom = note_length(g['num'], g['slash'], g['den'])
-                    tokens.append(Rest(g['sym'], num=num, denom=denom, line=i, char=j, text=m.group()))
+                    tokens.append(Rest(g['sym'], num=num, denom=denom, time=time_sig, line=i, char=j, text=m.group()))
 
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')

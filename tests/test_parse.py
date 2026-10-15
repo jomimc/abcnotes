@@ -25,6 +25,7 @@ def tune(body, **fields):
     ('C|', (2, 2)),
     ('(2+3)/8', (5, 8)),
     ('2+2+2+3/16', (9, 16)),
+    ('2 + 5/8', (7, 8)),
     ('none', None),
     (' 3/4 ', (3, 4)),
 ])
@@ -197,6 +198,37 @@ def test_key_explicit_accidentals(key, accidentals):
 ])
 def test_key_accidentals_in_body(body, expected):
     assert pitches(body, K='D ^g') == expected
+
+
+# --- fields in the tune body -------------------------------------------------
+
+def test_body_key_line_changes_key():
+    assert pitches('F\nK:D\nF\n[K:G]F', K='C') == [5, 6, 6]
+
+
+def test_body_meter_and_length_fields():
+    t = tune('A\nM:6/8\nA [M:3/4] A\nL:1/16\nA [L:1/4] A', M='4/4', L='1/8')
+    assert [n.time_sig._meter for n in t.notes] == [(4, 4), (6, 8), (3, 4), (3, 4), (3, 4)]
+    assert [n.time_sig._unit_len for n in t.notes] == [[1, 8], [1, 8], [1, 8], [1, 16], [1, 4]]
+
+
+def test_body_tempo_field():
+    t = tune('A [Q:1/4=80] A', Q='1/4=120')
+    assert [n.time_sig._tempo[1] for n in t.notes] == [120, 80]
+
+
+@pytest.mark.parametrize('body, fields, expected', [
+    ('A A2 A/', dict(L='1/8'), [1 / 8, 1 / 4, 1 / 16]),
+    ('A', dict(L='1/4'), [1 / 4]),
+    ('A', dict(L='1'), [1.0]),
+    ('A [L:1/16] A', dict(L='1/8'), [1 / 8, 1 / 16]),
+    ('A z2', dict(M='2/4'), [1 / 16, 1 / 8]),          # default L: from the meter
+    ('Z Z2 X', dict(M='6/8', L='1/8'), [6 / 8, 12 / 8, 6 / 8]),   # measure rests
+    ('Z', dict(M='none', L='1/8'), [1 / 8]),           # no meter: fall back to L:
+])
+def test_abs_duration(body, fields, expected):
+    toks = [tok for tok in tune(body, **fields).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
+    assert [tok.abs_duration for tok in toks] == pytest.approx(expected)
 
 
 def test_double_sharp_key_signature_pitch():
