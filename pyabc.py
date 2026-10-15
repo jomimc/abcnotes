@@ -542,6 +542,13 @@ class InfoContext(object):
         return f2
 
 
+def strip_comment(line):
+    """Remove a % comment (and anything after it) from a line. A percent
+    escaped as \\% is not a comment.
+    """
+    return re.split(r'(?<!\\)%', line)[0]
+
+
 class Tune(object):
     """Initialize with either an ABC string or a json-parsed dict read from
     the TheSession API.
@@ -571,7 +578,7 @@ class Tune(object):
         tune = []
         in_tune = False
         for line in abc.split('\n'):
-            line = re.split(r'([^\\]|^)%', line)[0]
+            line = strip_comment(line)
             line = line.strip()
             if line == '':
                 continue
@@ -635,7 +642,7 @@ class Tune(object):
 
         tokens = []
         for i,line in enumerate(tune):
-            line = line.rstrip()
+            line = strip_comment(line).rstrip()
 
             if len(line) > 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
                 tokens.append(BodyField(line=i, char=0, text=line))

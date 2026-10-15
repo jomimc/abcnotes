@@ -55,3 +55,34 @@ def test_default_unit_note_length(fields, unit):
 
 def test_free_meter_repr():
     assert repr(tune('A', M='none').notes[0].time_sig) == '<TimeSignature free>'
+
+
+# --- comments ----------------------------------------------------------------
+
+@pytest.mark.parametrize('line, expected', [
+    ('AB%comment', 'AB'),
+    ('AB|%comment', 'AB|'),
+    ('%comment', ''),
+    ('AB', 'AB'),
+    ('A\\%B%c', 'A\\%B'),          # escaped percent is not a comment
+])
+def test_strip_comment(line, expected):
+    assert pyabc.strip_comment(line) == expected
+
+
+def test_comment_in_header_keeps_preceding_char():
+    t = tune('A', K='Edor%comment')
+    assert t.header['key'] == 'Edor'
+
+
+def test_comment_in_body():
+    t = tune('AB%comment\nC|%comment\nD')
+    assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
+    assert any(isinstance(tok, pyabc.Beam) for tok in t.tokens)
+
+
+def test_comment_in_json_body():
+    rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
+           'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
+    t = pyabc.Tune(json=rec)
+    assert [n.note for n in t.notes] == ['A', 'B', 'C']
