@@ -267,6 +267,95 @@ def test_unknown_header_lines_are_recorded():
     assert t.unknown_lines == [(2, 'some free text'), (3, 'ZZ:not a field')]
 
 
+# --- repeats and parts -------------------------------------------------------
+
+def played(body, **fields):
+    """Note letters in playback order, one string per bar with notes."""
+    out = []
+    for bar in tune(body, **fields).expand_repeats():
+        letters = ''.join(tok.note for tok in bar if isinstance(tok, pyabc.Note))
+        if letters:
+            out.append(letters)
+    return ' '.join(out)
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('A | B', 'A B'),
+    ('|: A :|', 'A A'),
+    ('|: A | B :|', 'A B A B'),
+    ('A :|', 'A A'),                                    # no |: repeat from the start
+    ('A :| B', 'A A B'),
+    ('A :| B :|', 'A A B B'),                           # ... or from the last :|
+    ('|: A :| B |1 C :|2 D |]', 'A A B C B D'),         # standard 4.8 example
+    ('A :: B :|', 'A A B B'),
+    ('A B |: C D :|', 'AB CD CD'),                      # pickup
+    ('A || B :|', 'A B B'),                             # ... or from the last double bar
+    ('|: A || B :|', 'A B A B'),                        # but not when there is a |:
+    ('|: A |1 B :|2 C |]', 'A B A C'),
+    ('|: A |[1,3 B :|[2 C :|[4 D |]', 'A B A C A B A D'),
+    ('|: A |1-2 B :|3 C |]', 'A B A B A C'),
+    ('|: A |1 B :|2 C :|3 D |]', 'A B A C A D'),
+    ('|: A |1 B C :|2 D |]', 'A BC A D'),               # a longer ending
+    ('|: A |1 B | C :|2 D |]', 'A B C A D'),            # a two-bar ending
+    ('|: A |1 B :|2 C | D :|', 'A B A C D D'),          # a repeat after the endings
+    ('|1 A |2 B |]', 'A B'),                            # endings with no :| (malformed)
+    ('A |1 B |2 C', 'A B A C'),                         # ... and no final bar line
+    ('|: A :| [1 B :| [2 C | D', 'A A B C D'),          # a section that is only endings
+    ('|: A |1 B :| [2 C | D', 'A B A C D'),             # [2 after a space
+    ('|: A :| B |1 C :| [2 D | E', 'A A B C B D E'),
+    ('|2 A || [2 B ||', 'A B'),                         # ending numbers on the first bar (malformed)
+    ('|: A :|: B :|', 'A A B B'),
+    ('|: A :|| B |]', 'A A B'),
+    ('A |: B :| C', 'A B B C'),
+])
+def test_expand_repeats(body, expected):
+    assert played(body) == expected
+
+
+def test_expand_repeats_keeps_bar_objects():
+    t = tune('|: A :|')
+    out = t.expand_repeats()
+    assert out[0] is out[1] and out[0] == t.bars[0]
+
+
+@pytest.mark.parametrize('spec, expected', [
+    ('ABAB', list('ABAB')),
+    ('A3', list('AAA')),
+    ('(AB)3.C', list('ABABABC')),
+    ('((AB)3.(CD)3)2', list('ABABABCDCDCD' * 2)),
+    ('A4.B4', list('AAAABBBB')),
+    ('', []),
+])
+def test_parse_parts(spec, expected):
+    assert pyabc.parse_parts(spec) == expected
+
+
+def test_parts_property():
+    t = tune('P:A\n|: C :|\nP:B\n|: D | E :|\n')
+    # A: the P:A group, |: C, and the closing :| group; B: |: D, | E, :|
+    assert [(name, len(bars)) for name, bars in t.parts] == [('A', 3), ('B', 3)]
+
+
+def test_parts_pickup_before_first_part():
+    t = tune('Z|\nP:A\nC :|')
+    assert [name for name, bars in t.parts] == ['', 'A']
+
+
+@pytest.mark.parametrize('order, expected', [
+    ('AB', 'C C D D'),
+    ('ABB', 'C C D D D D'),
+    ('(AB)2', 'C C D D C C D D'),
+    ('B', 'D D'),
+    ('AX', 'C C'),                     # unknown part names are skipped
+])
+def test_expand_repeats_with_parts(order, expected):
+    assert played('P:A\n|: C :|\nP:B\n|: D :|\n', P=order) == expected
+
+
+def test_parts_in_header_but_not_in_body():
+    assert played('|: C :| D', P='AB') == 'C C D'
+
+
 def test_bars_no_pickup():
     assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 

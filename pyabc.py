@@ -708,6 +708,112 @@ class InfoContext(object):
         return f2
 
 
+def parse_parts(spec):
+    """Expand a P: field into the sequence of part names:
+    'ABAB' -> ['A','B','A','B']   'A3' -> ['A','A','A']
+    '(AB)3.C' -> ['A','B','A','B','A','B','C']   (dots are ignored)
+    """
+    def parse(i):
+        out = []
+        while i < len(spec):
+            c = spec[i]
+            if c == ')':
+                return out, i + 1
+            if c == '(':
+                sub, i = parse(i + 1)
+            elif c in '. \t':
+                i += 1
+                continue
+            else:
+                sub, i = [c], i + 1
+            m = re.match(r'\d+', spec[i:])
+            if m is not None:
+                sub = sub * int(m.group())
+                i += m.end()
+            out.extend(sub)
+        return out, i
+    return parse(0)[0]
+
+
+def _section_info(bars, start):
+    """For the repeated section beginning at bars[start], return
+    (number of passes, index of the first bar after the section).
+    """
+    explicit = isinstance(bars[start][0], BarLine) and bars[start][0].repeat_start
+    passes = 1
+    seen_end = seen_ending = False
+    for i in range(start, len(bars)):
+        bl = bars[i][0]
+        if not isinstance(bl, BarLine):
+            continue
+        if bl.endings is not None:
+            passes = max(passes, max(bl.endings))
+            seen_ending = True
+        if i == start:
+            continue
+        if bl.repeat_end:
+            seen_end = True
+            passes = max(passes, 2)
+            # the section ends here, unless this :| closes one ending and
+            # the next one follows after a space  (|1 B :| [2 C)
+            if bl.endings is None and not (seen_ending and _is_empty(bars[i])
+                                           and _starts_ending(bars, i + 1)):
+                return passes, i
+        elif bl.repeat_start or (seen_end and bl.endings is None):
+            return passes, i
+        elif bl.double and bl.endings is None and not explicit:
+            # with no |: a repeat restarts from the latest double bar (4.8)
+            return passes, i
+    return passes, len(bars)
+
+
+def _starts_ending(bars, i):
+    return i < len(bars) and isinstance(bars[i][0], BarLine) and bars[i][0].endings is not None
+
+
+def _is_empty(bar):
+    return not any(isinstance(token, (Note, Rest)) for token in bar)
+
+
+def expand_repeats(bars):
+    """The bars in playback order: each repeated section is written out
+    once per pass, and on each pass only the variant ending whose numbers
+    include that pass is played. The bars themselves are not copied.
+    """
+    out = []
+    i = start = 0
+    pass_no = 1
+    skipped = False   # the previous bar was skipped (an ending not for this pass)
+    n_pass, section_end = _section_info(bars, 0) if bars else (1, 0)
+    while True:
+        if i == section_end:
+            if pass_no < n_pass:
+                i, pass_no, skipped = start, pass_no + 1, False
+                continue
+            if i == len(bars):
+                break
+            start, pass_no = i, 1
+            n_pass, section_end = _section_info(bars, i)
+        bl = bars[i][0]
+        if isinstance(bl, BarLine):
+            # a :| ends the pass, unless we got here by skipping the ending
+            # it closes (:|[2 on a pass that does not play ending 1)
+            if bl.repeat_end and i != start and pass_no < n_pass and not skipped:
+                i, pass_no, skipped = start, pass_no + 1, False
+                continue
+            if bl.endings is not None and pass_no not in bl.endings:
+                # not this pass: skip to the next ending or the end of the section
+                i += 1
+                while i < section_end and not (isinstance(bars[i][0], BarLine) and bars[i][0].endings is not None):
+                    i += 1
+                skipped = True
+                continue
+        out.append(bars[i])
+        skipped = False
+        i += 1
+    return out
+
+
 def strip_comment(line):
     """Remove a % comment (and anything after it) from a line. A percent
     escaped as \\% is not a comment.
@@ -753,6 +859,43 @@ class Tune(object):
                 bars.append([])
             bars[-1].append(token)
         return [bar for bar in bars if bar]
+
+    @property
+    def parts(self):
+        """[(part name, bars)] in source order, split where a P: field
+        appears in the body. Bars before the first P: have the name ''.
+        """
+        parts = [('', [])]
+        pending = None
+        for bar in self.bars:
+            if pending is not None:
+                parts.append((pending, []))
+                pending = None
+            for n, token in enumerate(bar):
+                if isinstance(token, (BodyField, InlineField)) and token._text.strip('[]')[:2] == 'P:':
+                    name = token._text.strip('[]')[2:].strip()
+                    if n == 0:
+                        parts.append((name, []))     # P: before any music: starts here
+                    else:
+                        pending = name              # after a bar line: starts at the next bar
+            parts[-1][1].append(bar)
+        return [p for p in parts if p[1]]
+
+    def expand_repeats(self):
+        """Bars in playback order (see expand_repeats()), following the part
+        order of a P: header field when there is one.
+        """
+        order = parse_parts(self.header.get('parts', ''))
+        parts = self.parts
+        if not order or all(name == '' for name, bars in parts):
+            return expand_repeats(self.bars)
+        expanded = {}
+        for name, bars in parts:
+            expanded.setdefault(name, []).extend(expand_repeats(bars))
+        out = list(expanded.get('', []))     # anything before the first P: plays once
+        for name in order:
+            out.extend(expanded.get(name, []))
+        return out
 
     def parse_abc(self, abc):
         self.abc = abc
