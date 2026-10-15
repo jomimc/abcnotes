@@ -515,8 +515,30 @@ class Note(Token):
 
 
 
-class Beam(Token):
-    pass
+def parse_endings(text):
+    """Pass numbers of a variant ending:  '1' -> [1]   '1,3-5' -> [1, 3, 4, 5]"""
+    passes = []
+    for item in text.split(','):
+        if '-' in item:
+            lo, hi = item.split('-', 1)
+            passes.extend(range(int(lo), int(hi) + 1))
+        else:
+            passes.append(int(item))
+    return passes
+
+
+class BarLine(Token):
+    """  |  ||  |]  [|  |:  :|  ::  |1  [2  :|2,4  """
+    def __init__(self, **kwds):
+        Token.__init__(self, **kwds)
+        m = re.match(r'([\|\[\]\:]+)(.*)', self._text)
+        bar, ending = m.groups()
+        self.repeat_start = bar.endswith(':')     # |:  ::  :|:
+        self.repeat_end = bar.startswith(':')     # :|  ::  :|]
+        self.endings = parse_endings(ending) if ending[:1].isdigit() else None
+        self.double = any(x in bar for x in ('||', '|]', '[|'))
+
+Beam = BarLine   # the original name of this token class
 
 class Space(Token):
     pass
@@ -678,6 +700,19 @@ class Tune(object):
     @property
     def notes(self):
         return [t for t in self.tokens if isinstance(t, Note)]
+
+    @property
+    def bars(self):
+        """Tokens grouped by bar: a list of lists, each beginning with the
+        BarLine that opens it. Tokens before the first bar line (a pickup)
+        form a first group with no BarLine.
+        """
+        bars = [[]]
+        for token in self.tokens:
+            if isinstance(token, BarLine):
+                bars.append([])
+            bars[-1].append(token)
+        return [bar for bar in bars if bar]
 
     def parse_abc(self, abc):
         self.abc = abc
@@ -842,15 +877,19 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Beam  |   :|   |:   ||   and Chord  [ABC]
+                # Chord brackets  [ABC]   (a '[' that starts a bar line or an
+                # ending, [| [1, is a bar line below)
+                if part[0] == ']' or (part[0] == '[' and re.match(r'\[[\|\d]', part) is None):
+                    tokens.append(ChordBracket(line=i, char=j, text=part[0]))
+                    j += 1
+                    continue
+
+                # Bar line  |   :|   |:   ||   |]   [|   [|]   ::
                 # An ending may list several passes:  |1  [1,3  |1-3  :|2,4
-                m = re.match(r'((?:[\]\|\:]|\[(?![A-Za-z]:))+)(\d+(?:[\-,]\d+)*|[\-,])?', part)
+                m = re.match(r'((?:\[\|\]|\|\]|\[\||[\|\:])+(?:\[(?=\d))?|\[(?=\d))(\d+(?:[\-,]\d+)*|[\-,])?', part)
                 if m is not None:
-                    if m.group() in '[]':
-                        tokens.append(ChordBracket(line=i, char=j, text=m.group()))
-                    else:
-                        tokens.append(Beam(line=i, char=j, text=m.group()))
-                        bar_acc = {}
+                    tokens.append(BarLine(line=i, char=j, text=m.group()))
+                    bar_acc = {}
                     j += m.end()
                     continue
 

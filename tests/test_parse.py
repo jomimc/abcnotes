@@ -120,11 +120,51 @@ def test_ending_lists(body, expected):
 
 
 def test_chord_after_bar_is_not_an_ending():
-    # (the '[' is currently merged into the bar token as '|['; the notes
-    # must still come through and no ending number must be captured)
     t = tune('|[CEG] A')
     assert [n.note for n in t.notes] == ['C', 'E', 'G', 'A']
-    assert not any(c.isdigit() for c in ''.join(bars(t)))
+    assert bars(t) == ['|']
+    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.ChordBracket)] == ['[', ']']
+
+
+@pytest.mark.parametrize('text, start, end, endings, double', [
+    ('|', False, False, None, False),
+    ('||', False, False, None, True),
+    ('|]', False, False, None, True),
+    ('[|', False, False, None, True),
+    ('[|]', False, False, None, True),
+    ('|:', True, False, None, False),
+    (':|', False, True, None, False),
+    ('::', True, True, None, False),
+    (':|:', True, True, None, False),
+    ('|::', True, False, None, False),
+    (':|]', False, True, None, True),
+    ('|1', False, False, [1], False),
+    ('[2', False, False, [2], False),
+    (':|2', False, True, [2], False),
+    ('[1,3-5', False, False, [1, 3, 4, 5], False),
+    (':|2,4', False, True, [2, 4], False),
+])
+def test_barline_attributes(text, start, end, endings, double):
+    b = [tok for tok in tune('A %s B' % text).tokens if isinstance(tok, pyabc.BarLine)]
+    assert len(b) == 1
+    assert (b[0]._text, b[0].repeat_start, b[0].repeat_end, b[0].endings, b[0].double) == \
+        (text, start, end, endings, double)
+
+
+def test_beam_is_an_alias_for_barline():
+    assert pyabc.Beam is pyabc.BarLine
+    assert all(isinstance(tok, pyabc.Beam) for tok in tune('A|B').tokens if isinstance(tok, pyabc.BarLine))
+
+
+def test_bars_grouping():
+    t = tune('A B|:C D|E F:|G|]')
+    groups = [[tok._text for tok in bar if not isinstance(tok, (pyabc.Space, pyabc.Newline))]
+              for bar in t.bars]
+    assert groups == [['A', 'B'], ['|:', 'C', 'D'], ['|', 'E', 'F'], [':|', 'G'], ['|]']]
+
+
+def test_bars_no_pickup():
+    assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 
 
 # --- chord symbols and annotations -------------------------------------------
