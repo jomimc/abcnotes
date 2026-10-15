@@ -494,6 +494,10 @@ class Note(Token):
         n,d = self._length
         return (int(n) if n is not None else 1, int(d) if d is not None else 1)
 
+    @length.setter
+    def length(self, value):
+        self._length = value
+
     @property
     def duration(self):
         """Length in units of the unit note length (L:)."""
@@ -594,10 +598,18 @@ class Ignored(Token):
     pass
 
 class Tuplet(Token):
-    """  (5   """
-    def __init__(self, num, **kwds):
+    """  (3  or  (p:q:r  -- p notes in the time of q, applied to r notes  """
+    def __init__(self, num, q=None, r=None, compound=False, **kwds):
         Token.__init__(self, **kwds)
         self.num = num
+        p = int(num)
+        if not q:
+            # standard 4.13: (2 and (4 and (8 are in the time of 3; (3 and (6
+            # in 2; (5 (7 (9 in 3 for compound meters, otherwise 2
+            q = {2: 3, 3: 2, 4: 3, 6: 2, 8: 3}.get(p, 3 if compound else 2)
+        self.p = p
+        self.q = int(q)
+        self.r = int(r) if r else p
 
 class BodyField(Token):
     pass
@@ -648,6 +660,19 @@ def note_length(num, slash, den):
     else:
         den = 1
     return (int(num) if num is not None else 1, den)
+
+
+def apply_tuplet(tuplet, notes):
+    """Scale the length of the notes (one note or rest, or all the notes of
+    a chord, which counts as one) by q/p for the tuplet in progress.
+    Returns the tuplet state [q, p, notes left], or None once it is done.
+    """
+    q, p, left = tuplet
+    for note in notes:
+        num, den = note.length
+        note.length = (num * q, den * p)
+    left -= 1
+    return [q, p, left] if left > 0 else None
 
 
 def dotted_length(length, n_dots, longer):
@@ -822,6 +847,7 @@ class Tune(object):
 
             pending_dots = None
             chord_start = None   # index of the first token inside an open [ chord
+            tuplet = None        # [q, p, notes left] while inside a tuplet
             j = 0
             while j < len(line):
                 part = line[j:]
@@ -878,10 +904,13 @@ class Tune(object):
                         line=i, char=j, text=m.group()))
                     prev_note = tokens[-1]
 
-                    # (inside a chord the dots are applied at the closing bracket)
+                    # (inside a chord the dots and tuplet are applied at the
+                    # closing bracket, to the chord as a whole)
                     if pending_dots is not None and chord_start is None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
+                    if tuplet is not None and chord_start is None:
+                        tuplet = apply_tuplet(tuplet, [tokens[-1]])
 
                     j += m.end()
                     continue
@@ -907,6 +936,8 @@ class Tune(object):
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
+                    if tuplet is not None:
+                        tuplet = apply_tuplet(tuplet, chord_notes)
                     j += m.end()
                     continue
 
@@ -942,14 +973,20 @@ class Tune(object):
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
+                    if tuplet is not None:
+                        tuplet = apply_tuplet(tuplet, [tokens[-1]])
 
                     j += m.end()
                     continue
 
-                # Tuplets  (must parse before slur)
-                m = re.match(r'\(([2-9])', part)
+                # Tuplets  (3  (3:2:4   (must parse before slur)
+                m = re.match(r'\(([2-9])(?::(\d*))?(?::(\d*))?', part)
                 if m is not None:
-                    tokens.append(Tuplet(num=m.groups()[0], line=i, char=j, text=m.group()))
+                    p, q, r = m.groups()
+                    meter = time_sig._meter
+                    compound = meter is not None and meter[0] % 3 == 0 and meter[0] > 3
+                    tokens.append(Tuplet(num=p, q=q, r=r, compound=compound, line=i, char=j, text=m.group()))
+                    tuplet = [tokens[-1].q, tokens[-1].p, tokens[-1].r]   # scale num, scale den, notes left
                     j += m.end()
                     continue
 

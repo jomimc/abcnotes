@@ -200,6 +200,36 @@ def test_chord_tie():
     assert [n.tie for n in t.notes] == [True, True, False, False, False]
 
 
+# --- tuplets -----------------------------------------------------------------
+
+@pytest.mark.parametrize('body, fields, expected', [
+    ('(3ABC D', dict(), [2 / 3] * 3 + [1]),
+    ('(3A2B2C2 D', dict(), [4 / 3] * 3 + [1]),
+    ('(2AB C', dict(), [1.5, 1.5, 1]),
+    ('(4ABCD E', dict(), [0.75] * 4 + [1]),
+    ('(6ABCDEF G', dict(), [1 / 3] * 6 + [1]),
+    ('(8ABCDEFGA B', dict(), [3 / 8] * 8 + [1]),
+    ('(5ABCDE F', dict(M='4/4'), [2 / 5] * 5 + [1]),      # simple meter: in the time of 2
+    ('(5ABCDE F', dict(M='6/8'), [3 / 5] * 5 + [1]),      # compound meter: in the time of 3
+    ('(7ABCDEFG A', dict(M='9/8'), [3 / 7] * 7 + [1]),
+    ('(3:2:2AB C', dict(), [2 / 3, 2 / 3, 1]),            # explicit p:q:r
+    ('(3:2:4ABCD E', dict(), [2 / 3] * 4 + [1]),
+    ('(3::2AB C', dict(), [2 / 3, 2 / 3, 1]),
+    ('(3:4ABC D', dict(), [4 / 3] * 3 + [1]),
+    ('(3AzC D', dict(), [2 / 3] * 3 + [1]),               # rests count
+    ('(3A[CE]B D', dict(), [2 / 3] * 4 + [1]),            # a chord counts once
+    ('(3A>BC D', dict(), [1, 1 / 3, 2 / 3, 1]),
+])
+def test_tuplets(body, fields, expected):
+    assert durations(body, **fields) == pytest.approx(expected)
+
+
+def test_tuplet_token_fields():
+    t = [tok for tok in tune('(3:2:4ABCD').tokens if isinstance(tok, pyabc.Tuplet)][0]
+    assert (t.num, t.p, t.q, t.r, t._text) == ('3', 3, 2, 4, '(3:2:4')
+    assert bars(tune('(3:2:4ABCD')) == []
+
+
 def test_bars_no_pickup():
     assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 
@@ -319,8 +349,8 @@ def test_key_field_with_comment():
 
 # --- note and rest lengths, broken rhythm ------------------------------------
 
-def durations(body):
-    return [tok.duration for tok in tune(body).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
+def durations(body, **fields):
+    return [tok.duration for tok in tune(body, **fields).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
 
 
 @pytest.mark.parametrize('body, expected', [
