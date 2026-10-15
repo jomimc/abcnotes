@@ -130,9 +130,16 @@ class Key(object):
 
     def parse_key(self, key):
         key = key.strip()
-        # highland pipe keys
+        # drop clef and other specifiers:  clef=bass  middle=d  transpose=-2
+        # bare clef names, and the "exp" (explicit accidentals) keyword
+        key = re.sub(r'\s*\b(\w+=\S*|treble|alto|tenor|bass|perc|exp)\b', '', key).strip()
+        # no key signature (K:none, or an empty K: field)
+        if key in ['', 'none']:
+            return Pitch('C'), 'major'
+        # highland pipe keys: F# and C# (with G natural), i.e. the D signature.
+        # HP displays no signature and Hp displays it; the pitches are the same.
         if key in ['HP', 'Hp']:
-            return {'F': 1, 'C': 1, 'G': 0}
+            return Pitch('D'), 'major'
 
         m = re.match(r'([A-G])(\#|b)?\s*(\w+)?(.*)', key)
         if m is None:
@@ -304,15 +311,34 @@ class Pitch(object):
         return Pitch(self.value-x, octave=self.octave)
 
 
+def parse_meter(meter):
+    """Convert a meter string like "6/8", "C", "C|", "(2+3)/8" or "none"
+    to a (numerator, denominator) tuple, or None for free meter.
+    """
+    meter = meter.strip()
+    if meter in ('none', 'free', ''):
+        return None
+    if meter == 'C':
+        return (4, 4)
+    if meter == 'C|':
+        return (2, 2)
+    m = re.match(r'\(?(\d+(?:\+\d+)*)\)?/(\d+)$', meter)
+    if m is None:
+        raise ValueError('Invalid meter "%s"' % meter)
+    num = sum(int(x) for x in m.group(1).split('+'))
+    return (num, int(m.group(2)))
+
+
 class TimeSignature(object):
     def __init__(self, meter, unit_len, tempo=None):
-        meter = meter.replace('C|', '2/2').replace('C', '4/4')
-        self._meter = [int(x) for x in meter.split('/')]
+        self._meter = parse_meter(meter)
         self._unit_len = [int(x) for x in unit_len.split('/')]
         self._tempo = tempo
 
     def __repr__(self):
-        return "<TimeSignature %d/%d>" % tuple(self._meter)
+        if self._meter is None:
+            return "<TimeSignature free>"
+        return "<TimeSignature %d/%d>" % self._meter
 
 
 # Decoration symbols from
@@ -415,15 +441,7 @@ class Note(Token):
         longer = direction == 'left'
         if '<' in dots:
             longer = not longer
-        n_dots = len(dots)
-        num, den = self.length
-        if longer:
-            num = num * 3
-            den = den * 2
-            self._length = (num, den)
-        else:
-            den = den * 2
-            self._length = (num, den)
+        self._length = dotted_length(self.length, len(dots), longer)
 
 
 
@@ -468,6 +486,14 @@ class Decoration(Token):
     """  .~HLMOPSTuv  """
     pass
 
+class VoiceOverlay(Token):
+    """   &   """
+    pass
+
+class Ignored(Token):
+    """  typesetting-only or reserved characters:  y $ ` # * ; ? @  """
+    pass
+
 class Tuplet(Token):
     """  (5   """
     def __init__(self, num, **kwds):
@@ -485,7 +511,11 @@ class Rest(Token):
         # char==X or Z means length is in measures
         Token.__init__(self, **kwds)
         self.symbol = symbol
-        self.length = (num, denom)
+        self.length = (int(num) if num is not None else 1, int(denom) if denom is not None else 1)
+
+    @property
+    def duration(self):
+        return self.length[0] / self.length[1]
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this rest.
@@ -494,16 +524,31 @@ class Rest(Token):
         longer = direction == 'left'
         if '<' in dots:
             longer = not longer
-        num, den = self.length
-        num = 1 if num is None else int(num)
-        den = 1 if den is None else int(den)
-        if longer:
-            # a dot multiplies the duration by 3/2 (see Note.dotify)
-            num = num * 3
-            den = den * 2
-        else:
-            den = den * 2
-        self.length = (num, den)
+        self.length = dotted_length(self.length, len(dots), longer)
+
+
+def note_length(num, slash, den):
+    """Length (num, den) of a note or rest from the matched pieces of its
+    length string:  A2 -> (2,1)   A/ -> (1,2)   A// -> (1,4)   A3/2 -> (3,2)
+    """
+    if den is not None:
+        den = int(den)
+    elif slash is not None:
+        den = 2 ** len(slash)
+    else:
+        den = 1
+    return (int(num) if num is not None else 1, den)
+
+
+def dotted_length(length, n_dots, longer):
+    """Length (num, den) after a broken rhythm of n_dots '>' or '<' marks.
+    One mark multiplies the longer side by 3/2 and the shorter by 1/2;
+    two marks give 7/4 and 1/4; and so on.
+    """
+    num, den = length
+    if longer:
+        return (num * (2 ** (n_dots + 1) - 1), den * 2 ** n_dots)
+    return (num, den * 2 ** n_dots)
 
 
 class InfoContext(object):
@@ -521,6 +566,13 @@ class InfoContext(object):
         f2 = InfoContext(self._fields)
         f2._fields.update(fields)
         return f2
+
+
+def strip_comment(line):
+    """Remove a % comment (and anything after it) from a line. A percent
+    escaped as \\% is not a comment.
+    """
+    return re.split(r'(?<!\\)%', line)[0]
 
 
 class Tune(object):
@@ -552,18 +604,18 @@ class Tune(object):
         tune = []
         in_tune = False
         for line in abc.split('\n'):
-            line = re.split(r'([^\\]|^)%', line)[0]
+            line = strip_comment(line)
             line = line.strip()
             if line == '':
                 continue
             if in_tune:
                 tune.append(line)
             else:
-                if line[0] in info_keys and line[1] == ':':
+                if len(line) > 1 and line[0] in info_keys and line[1] == ':':
                     header.append(line)
                     if line[0] == 'K':
                         in_tune = True
-                elif line[:2] == '+:':
+                elif line[:2] == '+:' and header:
                     header[-1] += ' ' + line[2:]
 
         self.parse_header(header)
@@ -602,8 +654,11 @@ class Tune(object):
         meter = self.header.get('meter', 'free')
         unit = self.header.get('unit note length', None)
         # determine default unit note length from meter if possible
-        if unit is None and meter != 'free':
-            if eval(meter) < 0.75:
+        # (standard 3.1.7: 1/16 if the meter is less than 0.75, else 1/8;
+        # 1/8 if there is no meter)
+        if unit is None:
+            m = parse_meter(meter)
+            if m is not None and m[0] / m[1] < 0.75:
                 unit = "1/16"
             else:
                 unit = "1/8"
@@ -613,9 +668,9 @@ class Tune(object):
 
         tokens = []
         for i,line in enumerate(tune):
-            line = line.rstrip()
+            line = strip_comment(line).rstrip()
 
-            if len(line) > 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
+            if len(line) >= 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
                 tokens.append(BodyField(line=i, char=0, text=line))
                 continue
 
@@ -653,13 +708,7 @@ class Tune(object):
                         octave -= g['oct'].count(",")
                         octave += g['oct'].count("'")
 
-                    num = g.get('num', 1)
-                    if g['den'] is not None:
-                        denom = g['den']
-                    elif g['slash'] is not None:
-                        denom = 2 * g['slash'].count('/')
-                    else:
-                        denom = 1
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
 
                     tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
                         octave=octave, num=num, denom=denom, line=i, char=j, text=m.group()))
@@ -672,7 +721,8 @@ class Tune(object):
                     continue
 
                 # Beam  |   :|   |:   ||   and Chord  [ABC]
-                m = re.match(r'((?:[\]\|\:]|\[(?![A-Za-z]:))+)([0-9\-,])?', part)
+                # An ending may list several passes:  |1  [1,3  |1-3  :|2,4
+                m = re.match(r'((?:[\]\|\:]|\[(?![A-Za-z]:))+)(\d+(?:[\-,]\d+)*|[\-,])?', part)
                 if m is not None:
                     if m.group() in '[]':
                         tokens.append(ChordBracket(line=i, char=j, text=m.group()))
@@ -681,20 +731,24 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Broken rhythm
-                if len(tokens) > 0 and isinstance(tokens[-1], (Note, Rest)):
+                # Broken rhythm  (spaces are allowed around the marks:  A > B)
+                k = len(tokens) - 1
+                while k >= 0 and isinstance(tokens[k], Space):
+                    k -= 1
+                if k >= 0 and isinstance(tokens[k], (Note, Rest)):
                     m = re.match('<+|>+', part)
                     if m is not None:
-                        tokens[-1].dotify(part, 'left')
-                        pending_dots = part
+                        tokens[k].dotify(m.group(), 'left')
+                        pending_dots = m.group()
                         j += m.end()
                         continue
 
                 # Rest
-                m = re.match(r'([XZxz])(\d+)?(/(\d+)?)?', part)
+                m = re.match(r"(?P<sym>[XZxz])(?P<num>\d+)?(?P<slash>/+)?(?P<den>\d+)?", part)
                 if m is not None:
-                    g = m.groups()
-                    tokens.append(Rest(g[0], num=g[1], denom=g[3], line=i, char=j, text=m.group()))
+                    g = m.groupdict()
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
+                    tokens.append(Rest(g['sym'], num=num, denom=denom, line=i, char=j, text=m.group()))
 
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
@@ -729,17 +783,38 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Decorations (single character)
-                if part[0] in '.~HLMOPSTuv':
+                # Decorations (single character: . ~ and the letters H-W h-w,
+                # which U: may redefine; x z are rests and y is the spacer)
+                if part[0] in '.~HIJKLMNOPQRSTUVWhijklmnopqrstuvw':
                     tokens.append(Decoration(line=i, char=j, text=part[0]))
                     j += 1
                     continue
 
-                # Decorations (!symbol!)
-                m = re.match(r'\!([^\! ]+)\!', part)
+                # Decorations (!symbol!  or the older +symbol+)
+                m = re.match(r'\!([^\! ]+)\!|\+([^\+ ]+)\+', part)
                 if m is not None:
                     tokens.append(Decoration(line=i, char=j, text=m.group()))
                     j += m.end()
+                    continue
+
+                # Old-style line break: a lone ! at the end of the line
+                if part == '!':
+                    tokens.append(Ignored(line=i, char=j, text='!'))
+                    j += 1
+                    continue
+
+                # Voice overlay  &
+                if part[0] == '&':
+                    tokens.append(VoiceOverlay(line=i, char=j, text='&'))
+                    j += 1
+                    continue
+
+                # Typesetting-only symbols: y spacer, $ line break, ` beam
+                # hint; and the reserved characters # * ; ? @, which the
+                # standard says to ignore
+                if part[0] in 'y$`#*;?@':
+                    tokens.append(Ignored(line=i, char=j, text=part[0]))
+                    j += 1
                     continue
 
                 # Continuation
@@ -755,8 +830,9 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Chord symbol
-                m = re.match(r'"[\w#/]+"', part)
+                # Chord symbol  (anything else in quotes: "G", "D/f+", "N.C.",
+                # "Reel." -- the standard says to handle these liberally)
+                m = re.match(r'"[^"]*"', part)
                 if m is not None:
                     tokens.append(ChordSymbol(line=i, char=j, text=m.group()))
                     j += m.end()
