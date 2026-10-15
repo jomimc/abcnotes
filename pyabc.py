@@ -571,8 +571,8 @@ class Tune(object):
 
     def parse_json(self, json):
         self.header = {
-            "reference number": json['tune'],
-            "setting": json['setting'],
+            "reference number": int(json['tune_id']),
+            "setting": int(json['setting_id']),
             "tune title": json['name'],
             "meter": json['meter'],
             "unit note length": "1/" + json['meter'].split('/')[1],
