@@ -785,8 +785,9 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Chord symbol
-                m = re.match(r'"[\w#/]+"', part)
+                # Chord symbol  (anything else in quotes: "G", "D/f+", "N.C.",
+                # "Reel." -- the standard says to handle these liberally)
+                m = re.match(r'"[^"]*"', part)
                 if m is not None:
                     tokens.append(ChordSymbol(line=i, char=j, text=m.group()))
                     j += m.end()

@@ -126,6 +126,31 @@ def test_chord_after_bar_is_not_an_ending():
     assert not any(c.isdigit() for c in ''.join(bars(t)))
 
 
+# --- chord symbols and annotations -------------------------------------------
+
+@pytest.mark.parametrize('text', [
+    '"G"', '"Em7"', '"G/B"', '"D/f+"', '"G(Em)"', '"N.C."', '"Reel."',
+    '"Star of the County Down"', '""', '"D.C. to Allegro."',
+])
+def test_chord_symbol_liberal(text):
+    t = tune('%sA B' % text)
+    syms = [tok for tok in t.tokens if isinstance(tok, pyabc.ChordSymbol)]
+    assert [s._text for s in syms] == [text]
+    assert [n.note for n in t.notes] == ['A', 'B']
+
+
+@pytest.mark.parametrize('text', ['"^above"', '"_below"', '"<left"', '">right"', '"@free"'])
+def test_annotation_placement(text):
+    t = tune('%sA' % text)
+    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.Annotation)] == [text]
+    assert not any(isinstance(tok, pyabc.ChordSymbol) for tok in t.tokens)
+
+
+def test_unterminated_quote_still_fails():
+    with pytest.raises(Exception):
+        tune('"G A B')
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
