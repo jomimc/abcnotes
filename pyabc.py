@@ -563,8 +563,15 @@ class GracenoteBrace(Token):
     pass
 
 class ChordBracket(Token):
-    """  [  or  ]  """
-    pass
+    """  [  or  ]2  (a closing bracket may carry the chord's length; it also
+    holds the chord's notes so that a following > or - applies to all)  """
+    def __init__(self, notes=(), **kwds):
+        Token.__init__(self, **kwds)
+        self.notes = list(notes)
+
+    def dotify(self, dots, direction):
+        for note in self.notes:
+            note.dotify(dots, direction)
 
 class ChordSymbol(Token):
     """   "Amaj"   """
@@ -814,6 +821,7 @@ class Tune(object):
                 continue
 
             pending_dots = None
+            chord_start = None   # index of the first token inside an open [ chord
             j = 0
             while j < len(line):
                 part = line[j:]
@@ -870,18 +878,36 @@ class Tune(object):
                         line=i, char=j, text=m.group()))
                     prev_note = tokens[-1]
 
-                    if pending_dots is not None:
+                    # (inside a chord the dots are applied at the closing bracket)
+                    if pending_dots is not None and chord_start is None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
 
                     j += m.end()
                     continue
 
-                # Chord brackets  [ABC]   (a '[' that starts a bar line or an
-                # ending, [| [1, is a bar line below)
-                if part[0] == ']' or (part[0] == '[' and re.match(r'\[[\|\d]', part) is None):
-                    tokens.append(ChordBracket(line=i, char=j, text=part[0]))
+                # Chord brackets  [ABC]  [ABC]2   (a '[' that starts a bar line
+                # or an ending, [| [1, is a bar line below)
+                if part[0] == '[' and re.match(r'\[[\|\d]', part) is None:
+                    tokens.append(ChordBracket(line=i, char=j, text='['))
+                    chord_start = len(tokens)
                     j += 1
+                    continue
+                m = re.match(r"\](?P<num>\d+)?(?P<slash>/+)?(?P<den>\d+)?", part)
+                if m is not None:
+                    g = m.groupdict()
+                    chord_notes = [] if chord_start is None else \
+                        [t for t in tokens[chord_start:] if isinstance(t, Note)]
+                    # a length on the chord multiplies the length of each note
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
+                    for note in chord_notes:
+                        note._length = (note.length[0] * num, note.length[1] * denom)
+                    tokens.append(ChordBracket(notes=chord_notes, line=i, char=j, text=m.group()))
+                    chord_start = None
+                    if pending_dots is not None:
+                        tokens[-1].dotify(pending_dots, 'right')
+                        pending_dots = None
+                    j += m.end()
                     continue
 
                 # Bar line  |   :|   |:   ||   |]   [|   [|]   ::
@@ -890,6 +916,7 @@ class Tune(object):
                 if m is not None:
                     tokens.append(BarLine(line=i, char=j, text=m.group()))
                     bar_acc = {}
+                    chord_start = None   # a bar line ends an unclosed chord
                     j += m.end()
                     continue
 
@@ -897,7 +924,7 @@ class Tune(object):
                 k = len(tokens) - 1
                 while k >= 0 and isinstance(tokens[k], Space):
                     k -= 1
-                if k >= 0 and isinstance(tokens[k], (Note, Rest)):
+                if k >= 0 and isinstance(tokens[k], (Note, Rest, ChordBracket)) and chord_start is None:
                     m = re.match('<+|>+', part)
                     if m is not None:
                         tokens[k].dotify(m.group(), 'left')
@@ -940,6 +967,9 @@ class Tune(object):
                         k -= 1
                     if k >= 0 and isinstance(tokens[k], Note):
                         tokens[k].tie = True
+                    elif k >= 0 and isinstance(tokens[k], ChordBracket):
+                        for note in tokens[k].notes:
+                            note.tie = True
                     j += 1
                     continue
 

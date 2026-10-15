@@ -163,6 +163,43 @@ def test_bars_grouping():
     assert groups == [['A', 'B'], ['|:', 'C', 'D'], ['|', 'E', 'F'], [':|', 'G'], ['|]']]
 
 
+# --- chords ------------------------------------------------------------------
+
+@pytest.mark.parametrize('body, expected', [
+    ('[CEG] A', [1, 1, 1, 1]),
+    ('[CEG]2 A', [2, 2, 2, 1]),
+    ('[CEG]/ [CE]// [CE]3/2', [0.5, 0.5, 0.5, 0.25, 0.25, 1.5, 1.5]),
+    ('[C2E2]2', [4, 4]),
+    ('[CE]>A', [1.5, 1.5, 0.5]),
+    ('A>[CE]', [1.5, 0.5, 0.5]),
+    ('[CE]<[DF]', [0.5, 0.5, 1.5, 1.5]),
+    ('[CE]>>A', [1.75, 1.75, 0.25]),
+])
+def test_chord_lengths(body, expected):
+    assert durations(body) == pytest.approx(expected)
+
+
+def test_chord_tokens():
+    t = tune('[CE]2|')
+    close = [tok for tok in t.tokens if isinstance(tok, pyabc.ChordBracket)][1]
+    assert close._text == ']2'
+    assert [n.note for n in close.notes] == ['C', 'E']
+    assert bars(t) == ['|']
+
+
+def test_stray_closing_bracket_is_harmless():
+    assert durations('A B]2 C') == [1, 1, 1]
+
+
+def test_unclosed_chord_ends_at_bar_line():
+    assert durations('[A|:B>C') == [1, 1.5, 0.5]
+
+
+def test_chord_tie():
+    t = tune('[CE]-[CE] A')
+    assert [n.tie for n in t.notes] == [True, True, False, False, False]
+
+
 def test_bars_no_pickup():
     assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 
