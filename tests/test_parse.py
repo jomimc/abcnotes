@@ -101,6 +101,31 @@ def test_leading_continuation_line_is_ignored():
     assert t.header['tune title'] == 'test'
 
 
+# --- bar lines and endings ---------------------------------------------------
+
+def bars(t):
+    return [tok._text for tok in t.tokens if isinstance(tok, pyabc.Beam)]
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('|1 A :|2 B |]', ['|1', ':|2', '|]']),
+    ('|: A [1 B :|[2 C ||', ['|:', '[1', ':|[2', '||']),
+    ('[1,3 A :|[2,4 B |', ['[1,3', ':|[2,4', '|']),
+    ('|1-3 A :|4 B |', ['|1-3', ':|4', '|']),
+    ('[1,3-5 A :|', ['[1,3-5', ':|']),
+])
+def test_ending_lists(body, expected):
+    assert bars(tune(body)) == expected
+
+
+def test_chord_after_bar_is_not_an_ending():
+    # (the '[' is currently merged into the bar token as '|['; the notes
+    # must still come through and no ending number must be captured)
+    t = tune('|[CEG] A')
+    assert [n.note for n in t.notes] == ['C', 'E', 'G', 'A']
+    assert not any(c.isdigit() for c in ''.join(bars(t)))
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
