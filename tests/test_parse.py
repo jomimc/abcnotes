@@ -356,6 +356,109 @@ def test_parts_in_header_but_not_in_body():
     assert played('|: C :| D', P='AB') == 'C C D'
 
 
+# --- validation --------------------------------------------------------------
+
+def issues(body, **fields):
+    fields.setdefault('K', 'C')
+    header = ''.join('%s:%s\n' % (k, v) for k, v in fields.items())
+    return pyabc.validate('X:1\nT:test\nM:4/4\nL:1/8\n' + header + body + '\n')
+
+
+def messages(body, **fields):
+    return [i.message for i in issues(body, **fields)]
+
+
+def test_clean_tune_has_no_issues():
+    assert issues('|: ABCD EFGA | BCDE FGAB :|') == []
+
+
+def test_missing_fields():
+    assert [i.message for i in pyabc.validate('K:C\nA\n')] == \
+        ['missing reference number field (X:)', 'missing tune title field (T:)']
+
+
+def test_unknown_header_line():
+    msgs = messages('ABCD EFGA | ABCD EFGA |', Z='ok')
+    assert msgs == []
+    assert pyabc.validate('X:1\nT:t\nfree text\nK:C\nA\n')[0] == pyabc.Issue(3, None, "not an information field: 'free text'")
+
+
+def test_unexpected_character():
+    i = issues('ABCD EFGA | AB\x01CD EFGA |')
+    assert i == [pyabc.Issue(6, 15, "unexpected character '\\x01'")]
+
+
+def test_unbalanced_brackets_and_braces():
+    assert messages('[CE ABCD EFG | ABCD EFGA |') == ['unclosed [']
+    assert messages('ABCD EFGA | A]BCD EFGA |') == ['closing bracket without a chord']
+    assert messages('{gABCD EFGA | ABCD EFGA |') == ['unclosed {']
+    assert messages('ABCD EFGA | AB}CD EFGA |') == ['closing brace without grace notes']
+
+
+def test_unbalanced_slurs():
+    assert messages('(ABCD EFGA | ABCD EFGA |') == ['unbalanced slurs: 1 opened, 0 closed']
+
+
+def test_tie_to_a_different_note():
+    assert messages('ABCD EFGA- | BBCD EFGA |') == \
+        ['tie from A to a different note B (a slur was probably meant)']
+    assert messages('ABCD EFGA- | ABCD EFGA |') == []
+
+
+def test_ending_without_repeat():
+    assert messages('ABCD EFGA |1 ABCD EFGA |2 ABCD EFGA |') == ['variant ending in a tune with no repeat']
+
+
+def test_parts_mismatch():
+    assert messages('P:A\nABCD EFGA | ABCD EFGA |', P='AB') == ['part B in the P: field is not in the tune']
+    assert messages('P:A\nABCD EFGA |\nP:C\n ABCD EFGA |', P='A') == ['part C in the tune is not in the P: field']
+
+
+def test_bar_length():
+    assert messages('ABCD EFGA | ABCD EFG | ABCD EFGA | ABCD EFGA |') == ['bar 2 has length 7/8, expected 1']
+    assert messages('ABCD EFGA | ABCD EFGA2 | ABCD EFGA | A |') == ['bar 2 has length 9/8, expected 1']
+    # pickups: first and last bars are not checked
+    assert messages('A | ABCD EFGA | ABCD EFGA | A') == []
+    # chords, grace notes, tuplets, broken rhythm and measure rests all count correctly
+    assert messages('ABCD EFGA | [CEG]2{ab}C2 (3DEF A>B | z4 z4 | Z | Z2 | ABCD EFGA |') == ['bar 5 has length 2, expected 1']
+    assert messages('ABCD EFGA | ABCD EFGA | ABC |', M='6/8') == ['bar 2 has length 1, expected 3/4']
+    assert messages('ABCD EFGA | ABCD EFGA | A |', M='none') == []
+
+
+def test_bar_length_pickups_at_section_boundaries():
+    # short bars either side of a repeat, double bar or ending are pickups
+    assert messages('A | ABCD EFGA | ABCD EFG :| A | ABCD EFGA | ABCD EFGA |') == []
+    assert messages('A | ABCD EFGA |1 ABCD EFG :|2 ABCD EFG || A | ABCD EFGA |') == []
+    assert messages('A | ABCD EFGA | ABCD EFG |: ABCD EFGA | ABCD EFGA |') == []
+    # but a short bar inside a section, or a long bar anywhere, is reported
+    assert messages('A | ABCD EFGA | ABCD EFG | ABCD EFGA :| A |') == ['bar 3 has length 7/8, expected 1']
+    assert messages('A | ABCD EFGA | ABCD EFGA2 :| A |') == ['bar 3 has length 9/8, expected 1']
+
+
+def test_multi_voice_skips_bar_check():
+    assert messages('ABCD EFGA | ABCD | ABCD EFGA |', V='1') == ['multi-voice tune: bar lengths not checked']
+
+
+def test_validate_unparseable_header():
+    assert pyabc.validate('X:1\nT:t\nM:abc\nK:C\nA\n') == [pyabc.Issue(None, None, 'cannot parse: Invalid meter "abc"')]
+
+
+def test_split_tunes():
+    text = 'L:1/8\n%%score 1\nfree text\n\nX:1\nT:a\nK:C\nA|\n\nX:2\nT:b\nK:D\nF|\n'
+    tunes = pyabc.split_tunes(text)
+    assert len(tunes) == 2
+    assert tunes[0].startswith('L:1/8\n%%score 1\nX:1\n')
+    assert tunes[1] == 'L:1/8\n%%score 1\nX:2\nT:b\nK:D\nF|\n'
+    assert pyabc.split_tunes('no tunes here') == []
+
+
+def test_issue_line_numbers_from_json():
+    rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
+           'mode': 'Cmajor', 'abc': 'ABCD EFGA|\r\nABCD EFG|ABCD EFGA|'}
+    t = pyabc.Tune(json=rec)
+    assert t.validate() == [pyabc.Issue(2, 1, 'bar 2 has length 7/8, expected 1')]
+
+
 def test_bars_no_pickup():
     assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 

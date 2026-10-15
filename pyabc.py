@@ -1,6 +1,7 @@
 from __future__ import division
 import re, sys
 from fractions import Fraction
+from collections import namedtuple
 
 
 str_type = str if sys.version > '3' else basestring
@@ -814,6 +815,42 @@ def expand_repeats(bars):
     return out
 
 
+# A problem found by Tune.validate(): 1-based line and column in the ABC
+# text (None when it does not refer to a place) and a message.
+Issue = namedtuple('Issue', 'line char message')
+
+
+def split_tunes(text):
+    """Split the text of an ABC file into one string per tune (each
+    starting at its X: field). Information fields and %% directives in the
+    file header are prepended to every tune, as the standard says they
+    apply to all of them.
+    """
+    lines = text.split('\n')
+    starts = [i for i, line in enumerate(lines) if line.startswith('X:')]
+    if not starts:
+        return []
+    header = [l for l in lines[:starts[0]]
+              if (len(l) > 1 and l[0] in info_keys and l[1] == ':') or l.startswith('%%')]
+    tunes = []
+    for n, s in enumerate(starts):
+        e = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        tunes.append('\n'.join(header + lines[s:e]))
+    return tunes
+
+
+def validate(abc):
+    """Problems in one tune's ABC text, as a list of Issue. The tune is
+    read with strict=False; if its header cannot be read at all, the one
+    Issue says why.
+    """
+    try:
+        tune = Tune(abc=abc, strict=False)
+    except Exception as e:
+        return [Issue(None, None, 'cannot parse: %s' % e)]
+    return tune.validate()
+
+
 def strip_comment(line):
     """Remove a % comment (and anything after it) from a line. A percent
     escaped as \\% is not a comment.
@@ -881,6 +918,131 @@ class Tune(object):
             parts[-1][1].append(bar)
         return [p for p in parts if p[1]]
 
+    def validate(self):
+        """Problems with this tune, as a list of Issue (line, char, message).
+        Checks: required fields, header lines that are not fields,
+        characters the tokenizer could not read (strict=False), unbalanced
+        chord brackets, grace braces and slurs, ties between different
+        notes, endings without a repeat, P: parts that do not match the
+        body, and bars whose length does not match the meter.
+        """
+        issues = []
+
+        def at(token, message):
+            line = self.body_lines[token._line] if token._line < len(self.body_lines) else token._line
+            issues.append(Issue(line + 1, token._char + 1, message))
+
+        for name, letter in [('reference number', 'X'), ('tune title', 'T'), ('key', 'K')]:
+            if name not in self.header:
+                issues.append(Issue(None, None, 'missing %s field (%s:)' % (name, letter)))
+        for n, text in self.unknown_lines:
+            issues.append(Issue(n + 1, None, 'not an information field: %r' % text))
+
+        opened = {}     # per line: open [ and { counts
+        slurs = [0, 0]
+        line = None
+        for token in self.tokens:
+            if token._line != line:
+                for text, count in opened.items():
+                    if count > 0:
+                        issues.append(Issue(self.body_lines[line] + 1, None, 'unclosed %s' % text))
+                opened, line = {'[': 0, '{': 0}, token._line
+            if isinstance(token, Unknown):
+                at(token, 'unexpected character %r' % token._text)
+            elif isinstance(token, ChordBracket):
+                if token._text == '[':
+                    opened['['] += 1
+                elif opened['['] == 0:
+                    at(token, 'closing bracket without a chord')
+                else:
+                    opened['['] -= 1
+            elif isinstance(token, GracenoteBrace):
+                if token._text != '}':
+                    opened['{'] += 1
+                elif opened['{'] == 0:
+                    at(token, 'closing brace without grace notes')
+                else:
+                    opened['{'] -= 1
+            elif isinstance(token, Slur):
+                slurs[token._text == ')'] += 1
+        for text, count in opened.items():
+            if count > 0 and line is not None:
+                issues.append(Issue(self.body_lines[line] + 1, None, 'unclosed %s' % text))
+        if slurs[0] != slurs[1]:
+            issues.append(Issue(None, None, 'unbalanced slurs: %d opened, %d closed' % tuple(slurs)))
+
+        notes = self.notes
+        for n, note in enumerate(notes[:-1]):
+            if note.tie and (note.note, note.octave) != (notes[n + 1].note, notes[n + 1].octave):
+                at(note, 'tie from %s to a different note %s (a slur was probably meant)'
+                   % (note._text, notes[n + 1]._text))
+
+        bar_lines = [t for t in self.tokens if isinstance(t, BarLine)]
+        if any(b.endings for b in bar_lines) and not any(b.repeat_end for b in bar_lines):
+            at([b for b in bar_lines if b.endings][0], 'variant ending in a tune with no repeat')
+
+        order = set(parse_parts(self.header.get('parts', '')))
+        found = set(name for name, bars in self.parts if name)
+        for name in sorted(order - found):
+            issues.append(Issue(None, None, 'part %s in the P: field is not in the tune' % name))
+        for name in sorted(found - order):
+            if order:
+                issues.append(Issue(None, None, 'part %s in the tune is not in the P: field' % name))
+
+        if any(name == 'voice' for name, value in self.fields) or \
+                any(t._text.strip('[]')[:2] == 'V:' for t in self.tokens if isinstance(t, (BodyField, InlineField))):
+            issues.append(Issue(None, None, 'multi-voice tune: bar lengths not checked'))
+        else:
+            issues.extend(self._bar_length_issues())
+        return issues
+
+    def _bar_length_issues(self):
+        """Bars whose length differs from the meter, ignoring the first and
+        last bar (pickups) and bars with no notes."""
+        issues = []
+        bars = self.bars
+        with_notes = [n for n, bar in enumerate(bars) if not _is_empty(bar)]
+        for n, bar in enumerate(bars):
+            if n == 0 or n == with_notes[-1] or not isinstance(bar[0], BarLine):
+                continue
+            length = Fraction(0)
+            meter = first = None
+            in_chord = False
+            for token in bar:
+                if isinstance(token, ChordBracket):
+                    in_chord = token._text == '['
+                    chord_counted = False
+                elif isinstance(token, Note) and not token.grace:
+                    if in_chord:
+                        if chord_counted:
+                            continue
+                        chord_counted = True
+                    meter = token.time_sig._meter
+                    length += Fraction(*token.length) * Fraction(*token.time_sig._unit_len)
+                elif isinstance(token, Rest):
+                    meter = token.time_sig._meter
+                    if token.symbol in 'XZ' and meter is not None:
+                        length += Fraction(*token.length) * Fraction(*meter)
+                    else:
+                        length += Fraction(*token.length) * Fraction(*token.time_sig._unit_len)
+                else:
+                    continue
+                if first is None:
+                    first = token
+            if length == 0 or meter is None:
+                continue
+            expected = Fraction(*meter)
+            # a short bar next to a repeat, double bar or ending is a pickup
+            # (or the bar that a pickup completes), not an error
+            boundary = lambda bl: bl.repeat_start or bl.repeat_end or bl.double or bl.endings is not None
+            closing = bars[n + 1][0] if n + 1 < len(bars) else None
+            if length < expected and (boundary(bar[0]) or (isinstance(closing, BarLine) and boundary(closing))):
+                continue
+            if length != expected:
+                issues.append(Issue(self.body_lines[first._line] + 1, first._char + 1,
+                                    'bar %d has length %s, expected %s' % (n + 1, length, expected)))
+        return issues
+
     def expand_repeats(self):
         """Bars in playback order (see expand_repeats()), following the part
         order of a P: header field when there is one.
@@ -902,6 +1064,7 @@ class Tune(object):
         header = []
         tune = []
         self.unknown_lines = []   # (line number, text) of header lines that are not fields
+        self.body_lines = []
         in_tune = False
         for n, line in enumerate(abc.split('\n')):
             # a %%directive is equivalent to an I: field (standard 11.0)
@@ -913,6 +1076,7 @@ class Tune(object):
                 continue
             if in_tune:
                 tune.append(line)
+                self.body_lines.append(n)   # original line number of each body line
             else:
                 if len(line) > 1 and line[0] in info_keys and line[1] == ':':
                     header.append(line)
@@ -932,11 +1096,14 @@ class Tune(object):
             "setting": int(json['setting_id']),
             "tune title": json['name'],
             "meter": json['meter'],
-            "unit note length": "1/" + json['meter'].split('/')[1],
+            "unit note length": "1/8",     # thesession.org writes every tune with L:1/8
             "key": json['mode'],
         }
         self.fields = list(self.header.items())
-        self.parse_tune(json['abc'].split('\r\n'))
+        lines = json['abc'].split('\r\n')
+        self.unknown_lines = []
+        self.body_lines = list(range(len(lines)))
+        self.parse_tune(lines)
 
     def parse_header(self, header):
         # every field in order (a field may repeat, e.g. several T: or I:)
