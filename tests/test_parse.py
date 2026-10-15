@@ -230,6 +230,43 @@ def test_tuplet_token_fields():
     assert bars(tune('(3:2:4ABCD')) == []
 
 
+# --- robustness --------------------------------------------------------------
+
+def test_strict_raises_on_unknown_character():
+    with pytest.raises(Exception):
+        tune('A \x01 B')
+
+
+def test_non_strict_records_unknown_characters():
+    t = pyabc.Tune(abc='X:1\nT:t\nK:C\nA \x01 B}\n', strict=False)
+    unknown = [tok for tok in t.tokens if isinstance(tok, pyabc.Unknown)]
+    assert [(u._text, u._line, u._char) for u in unknown] == [('\x01', 0, 2)]
+    assert [n.note for n in t.notes] == ['A', 'B']
+
+
+def test_grace_note_flag():
+    t = tune('{g}A {/ab}B C')
+    assert [(n.note, n.grace) for n in t.notes] == \
+        [('g', True), ('A', False), ('a', True), ('b', True), ('B', False), ('C', False)]
+
+
+def test_missing_reference_and_title():
+    t = pyabc.Tune(abc='K:D\nF\n')
+    assert (t.reference, t.title) == (None, None)
+    assert [n.pitch.abs_value for n in t.notes] == [6]
+
+
+def test_missing_key_field():
+    # no K: means no tune body at all; nothing to parse, nothing raised
+    t = pyabc.Tune(abc='X:1\nT:t\nM:4/4\n')
+    assert t.notes == []
+
+
+def test_unknown_header_lines_are_recorded():
+    t = pyabc.Tune(abc='X:1\nT:t\nsome free text\nZZ:not a field\nK:C\nA\n')
+    assert t.unknown_lines == [(2, 'some free text'), (3, 'ZZ:not a field')]
+
+
 def test_bars_no_pickup():
     assert [bar[0]._text for bar in tune('|:A|B:|').bars] == ['|:', '|', ':|']
 

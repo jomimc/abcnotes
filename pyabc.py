@@ -472,7 +472,7 @@ class Token(object):
 
 
 class Note(Token):
-    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, **kwds):
+    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, grace=False, **kwds):
         Token.__init__(self, **kwds)
         self.key = key
         self.time_sig = time
@@ -482,6 +482,7 @@ class Note(Token):
         self.octave = octave
         self._length = (num, denom)
         self.tie = False                      # tied to the following note
+        self.grace = grace                    # a grace note, inside {...}
 
     @property
     def pitch(self):
@@ -591,6 +592,10 @@ class Decoration(Token):
 
 class VoiceOverlay(Token):
     """   &   """
+    pass
+
+class Unknown(Token):
+    """  a character the tokenizer could not interpret (strict=False only)  """
     pass
 
 class Ignored(Token):
@@ -714,7 +719,10 @@ class Tune(object):
     """Initialize with either an ABC string or a json-parsed dict read from
     the TheSession API.
     """
-    def __init__(self, abc=None, json=None):
+    def __init__(self, abc=None, json=None, strict=True):
+        # strict: raise on anything the tokenizer cannot read. Otherwise the
+        # offending character becomes an Unknown token (see validate()).
+        self.strict = strict
         if abc is not None:
             self.parse_abc(abc)
         elif json is not None:
@@ -750,8 +758,9 @@ class Tune(object):
         self.abc = abc
         header = []
         tune = []
+        self.unknown_lines = []   # (line number, text) of header lines that are not fields
         in_tune = False
-        for line in abc.split('\n'):
+        for n, line in enumerate(abc.split('\n')):
             # a %%directive is equivalent to an I: field (standard 11.0)
             if line.startswith('%%'):
                 line = 'I:' + line[2:]
@@ -768,6 +777,8 @@ class Tune(object):
                         in_tune = True
                 elif line[:2] == '+:' and header:
                     header[-1] += ' ' + line[2:]
+                else:
+                    self.unknown_lines.append((n, line))
 
         self.parse_header(header)
         self.parse_tune(tune)
@@ -793,16 +804,16 @@ class Tune(object):
                 continue    # the first T: is the title; later ones are alternatives
             h[name] = data
         self.header = h
-        self.reference = h['reference number']
-        self.title = h['tune title']
-        self.key = h['key']
+        self.reference = h.get('reference number')
+        self.title = h.get('tune title')
+        self.key = h.get('key', '')
 
     def parse_tune(self, tune):
         self.tokens = self.tokenize(tune, self.header)
 
     def tokenize(self, tune, header):
         # get initial key signature from header
-        key = Key(self.header['key'])
+        key = Key(self.header.get('key', ''))
 
         # get initial time signature from header
         meter = self.header.get('meter', 'free')
@@ -848,6 +859,7 @@ class Tune(object):
             pending_dots = None
             chord_start = None   # index of the first token inside an open [ chord
             tuplet = None        # [q, p, notes left] while inside a tuplet
+            in_grace = False     # inside {...}
             j = 0
             while j < len(line):
                 part = line[j:]
@@ -901,7 +913,7 @@ class Tune(object):
 
                     tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
                         octave=octave, num=num, denom=denom, bar_accidental=bar_accidental,
-                        line=i, char=j, text=m.group()))
+                        grace=in_grace, line=i, char=j, text=m.group()))
                     prev_note = tokens[-1]
 
                     # (inside a chord the dots and tuplet are applied at the
@@ -1014,6 +1026,7 @@ class Tune(object):
                 m = re.match(r'(\{[/\\]?)|\}', part)
                 if m is not None:
                     tokens.append(GracenoteBrace(line=i, char=j, text=m.group()))
+                    in_grace = m.group() != '}'
                     j += m.end()
                     continue
 
@@ -1072,7 +1085,10 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                raise Exception("Unable to parse: %s\n%s" % (part, self.url))
+                if self.strict:
+                    raise Exception("Unable to parse: %s\n%s" % (part, self.url))
+                tokens.append(Unknown(line=i, char=j, text=part[0]))
+                j += 1
 
             if tokens and not isinstance(tokens[-1], Continuation):
                 tokens.append(Newline(line=i, char=j, text='\n'))
