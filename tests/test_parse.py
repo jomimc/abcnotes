@@ -236,6 +236,12 @@ def test_decorations_and_ignored(body, expected):
     assert kinds(body) == expected
 
 
+def test_old_style_line_break():
+    t = tune('AB|!\nCD|!\n')
+    assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
+    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.Ignored)] == ['!', '!']
+
+
 def test_rests_and_spacer_are_not_decorations():
     assert kinds('x z y') == ['Rest', 'Rest', 'Ignored']
 

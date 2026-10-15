@@ -797,6 +797,12 @@ class Tune(object):
                     j += m.end()
                     continue
 
+                # Old-style line break: a lone ! at the end of the line
+                if part == '!':
+                    tokens.append(Ignored(line=i, char=j, text='!'))
+                    j += 1
+                    continue
+
                 # Voice overlay  &
                 if part[0] == '&':
                     tokens.append(VoiceOverlay(line=i, char=j, text='&'))
