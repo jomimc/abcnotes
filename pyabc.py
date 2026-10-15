@@ -1,5 +1,6 @@
 from __future__ import division
 import re, sys
+from fractions import Fraction
 
 
 str_type = str if sys.version > '3' else basestring
@@ -94,7 +95,9 @@ inline_fields = {k:v for k,v in info_keys.items() if v.inline}
 
 # map natural note letters to chromatic values
 pitch_values = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11, }
-accidental_values = {'': 0, '#': 1, 'b': -1}
+accidental_values = {'': 0, '#': 1, 'b': -1, '##': 2, 'bb': -2}
+# accidental written in a K: field (K:D ^g) -> accidental name used above
+key_accidental_names = {'=': '', '^': '#', '^^': '##', '_': 'b', '__': 'bb'}
 # semitone offset of an accidental written on a note inside the tune body
 note_accidental_values = {'=': 0, '^': 1, '^^': 2, '_': -1, '__': -2}
 for n,v in list(pitch_values.items()):
@@ -120,19 +123,35 @@ flat_order = "BEADGCF"
 
 
 class Key(object):
-    def __init__(self, name=None, root=None, mode=None):
+    def __init__(self, name=None, root=None, mode=None, base=None):
+        # accidentals written after the tonic (K:D ^g):  letter -> '#', 'b', ''
+        self.extra_accidentals = {}
+        # K:D exp ^f ^c  means only the explicit accidentals, no key signature
+        self.explicit_only = False
         if name is not None:
-            self.root, self.mode = self.parse_key(name)
+            self.root, self.mode = self.parse_key(name, base)
             assert root is None and mode is None
         else:
             self.root = Pitch(root)
             self.mode = mode
 
-    def parse_key(self, key):
+    def parse_key(self, key, base=None):
         key = key.strip()
+        self.explicit_only = re.search(r'\bexp\b', key) is not None
         # drop clef and other specifiers:  clef=bass  middle=d  transpose=-2
         # bare clef names, and the "exp" (explicit accidentals) keyword
         key = re.sub(r'\s*\b(\w+=\S*|treble|alto|tenor|bass|perc|exp)\b', '', key).strip()
+        # explicit accidentals after the tonic:  K:D ^g   K:F =b   K:C exp ^f
+        for acc, letter in re.findall(r'(\^\^|\^|__|_|=)([a-gA-G])', key):
+            self.extra_accidentals[letter.upper()] = key_accidental_names[acc]
+        key = re.sub(r'\s*(\^\^|\^|__|_|=)[a-gA-G]', '', key).strip()
+        # accidentals only, e.g. an inline [K:=f]: modify the current key
+        if key == '' and base is not None:
+            accidentals = dict(base.extra_accidentals)
+            accidentals.update(self.extra_accidentals)
+            self.extra_accidentals = accidentals
+            self.explicit_only = base.explicit_only
+            return base.root, base.mode
         # no key signature (K:none, or an empty K: field)
         if key in ['', 'none']:
             return Pitch('C'), 'major'
@@ -186,9 +205,12 @@ class Key(object):
 
     @property
     def accidentals(self):
-        """A dictionary of accidentals in the key signature.
+        """A dictionary of accidentals in the key signature, including any
+        written explicitly in the K: field.
         """
-        return {p:a for p,a in self.key_signature}
+        acc = {} if self.explicit_only else {s[0]: s[1:] for s in self.key_signature}
+        acc.update(self.extra_accidentals)
+        return acc
 
     @property
     def relative_ionian(self):
@@ -224,13 +246,16 @@ class Pitch(object):
             # An explicit accidental on the note (^ ^^ = _ __) takes priority;
             # otherwise the key signature supplies the accidental for the letter.
             letter = value.note.upper()
-            if value.accidental is None:
+            accidental = value.accidental
+            if accidental is None:
+                accidental = value.bar_accidental    # carried from earlier in the bar
+            if accidental is None:
                 acc = value.key.accidentals.get(letter, '')       # '#', 'b' or ''
                 self._name = letter + acc
                 self._value = pitch_values[letter] + accidental_values[acc]
             else:
                 self._name = value.note.capitalize()
-                self._value = pitch_values[letter] + note_accidental_values[value.accidental]
+                self._value = pitch_values[letter] + note_accidental_values[accidental]
 
             assert octave is None
             self._octave = value.octave
@@ -315,7 +340,7 @@ def parse_meter(meter):
     """Convert a meter string like "6/8", "C", "C|", "(2+3)/8" or "none"
     to a (numerator, denominator) tuple, or None for free meter.
     """
-    meter = meter.strip()
+    meter = re.sub(r'\s+', '', meter)
     if meter in ('none', 'free', ''):
         return None
     if meter == 'C':
@@ -329,11 +354,48 @@ def parse_meter(meter):
     return (num, int(m.group(2)))
 
 
+def parse_tempo(tempo):
+    """Split a Q: field into (beat, bpm, text):  Q:1/4=120 -> ((1,4), 120, '')
+    Q:120 -> (None, 120, '')   Q:"Allegro" -> (None, None, 'Allegro')
+    Q:3/8 3/8 2/8=40 -> ((8,8), 40, '')  (the beat is the sum).
+    """
+    tempo = tempo.strip()
+    text = ' '.join(re.findall(r'"([^"]*)"', tempo))
+    tempo = re.sub(r'"[^"]*"', '', tempo).strip()
+    m = re.match(r'(?:((?:\d+/\d+\s*)+)=)?\s*(\d+)$', tempo)
+    if m is None:
+        return (None, None, text)
+    beat = None
+    if m.group(1) is not None:
+        total = sum(Fraction(b) for b in m.group(1).split())
+        beat = (total.numerator, total.denominator)
+    return (beat, int(m.group(2)), text)
+
+
 class TimeSignature(object):
     def __init__(self, meter, unit_len, tempo=None):
+        self._fields = (meter, unit_len, tempo)   # as written, for update()
         self._meter = parse_meter(meter)
-        self._unit_len = [int(x) for x in unit_len.split('/')]
-        self._tempo = tempo
+        self._unit_len = [int(x) for x in (unit_len.strip() + '/1').split('/')[:2]]
+        self._tempo = parse_tempo(tempo) if tempo is not None else None
+
+    @property
+    def unit_len(self):
+        """Unit note length as a fraction of a whole note."""
+        return self._unit_len[0] / self._unit_len[1]
+
+    def update(self, field, value):
+        """Return (meter, unit_len, tempo) strings with one field replaced by
+        the value of an M:, L: or Q: field met in the tune body.
+        """
+        meter, unit_len, tempo = self._fields
+        if field == 'M':
+            meter = value.strip()
+        elif field == 'L':
+            unit_len = value.strip()
+        elif field == 'Q':
+            tempo = value.strip()
+        return meter, unit_len, tempo
 
     def __repr__(self):
         if self._meter is None:
@@ -410,14 +472,16 @@ class Token(object):
 
 
 class Note(Token):
-    def __init__(self, key, time, note, accidental, octave, num, denom, **kwds):
+    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, **kwds):
         Token.__init__(self, **kwds)
         self.key = key
         self.time_sig = time
         self.note = note
-        self.accidental = accidental
+        self.accidental = accidental          # written on this note, or None
+        self.bar_accidental = bar_accidental  # in force from earlier in the bar, or None
         self.octave = octave
         self._length = (num, denom)
+        self.tie = False                      # tied to the following note
 
     @property
     def pitch(self):
@@ -430,9 +494,19 @@ class Note(Token):
         n,d = self._length
         return (int(n) if n is not None else 1, int(d) if d is not None else 1)
 
+    @length.setter
+    def length(self, value):
+        self._length = value
+
     @property
     def duration(self):
+        """Length in units of the unit note length (L:)."""
         return self.length[0] / self.length[1]
+
+    @property
+    def abs_duration(self):
+        """Length as a fraction of a whole note."""
+        return self.duration * self.time_sig.unit_len
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this note.
@@ -445,8 +519,30 @@ class Note(Token):
 
 
 
-class Beam(Token):
-    pass
+def parse_endings(text):
+    """Pass numbers of a variant ending:  '1' -> [1]   '1,3-5' -> [1, 3, 4, 5]"""
+    passes = []
+    for item in text.split(','):
+        if '-' in item:
+            lo, hi = item.split('-', 1)
+            passes.extend(range(int(lo), int(hi) + 1))
+        else:
+            passes.append(int(item))
+    return passes
+
+
+class BarLine(Token):
+    """  |  ||  |]  [|  |:  :|  ::  |1  [2  :|2,4  """
+    def __init__(self, **kwds):
+        Token.__init__(self, **kwds)
+        m = re.match(r'([\|\[\]\:]+)(.*)', self._text)
+        bar, ending = m.groups()
+        self.repeat_start = bar.endswith(':')     # |:  ::  :|:
+        self.repeat_end = bar.startswith(':')     # :|  ::  :|]
+        self.endings = parse_endings(ending) if ending[:1].isdigit() else None
+        self.double = any(x in bar for x in ('||', '|]', '[|'))
+
+Beam = BarLine   # the original name of this token class
 
 class Space(Token):
     pass
@@ -471,8 +567,15 @@ class GracenoteBrace(Token):
     pass
 
 class ChordBracket(Token):
-    """  [  or  ]  """
-    pass
+    """  [  or  ]2  (a closing bracket may carry the chord's length; it also
+    holds the chord's notes so that a following > or - applies to all)  """
+    def __init__(self, notes=(), **kwds):
+        Token.__init__(self, **kwds)
+        self.notes = list(notes)
+
+    def dotify(self, dots, direction):
+        for note in self.notes:
+            note.dotify(dots, direction)
 
 class ChordSymbol(Token):
     """   "Amaj"   """
@@ -495,10 +598,18 @@ class Ignored(Token):
     pass
 
 class Tuplet(Token):
-    """  (5   """
-    def __init__(self, num, **kwds):
+    """  (3  or  (p:q:r  -- p notes in the time of q, applied to r notes  """
+    def __init__(self, num, q=None, r=None, compound=False, **kwds):
         Token.__init__(self, **kwds)
         self.num = num
+        p = int(num)
+        if not q:
+            # standard 4.13: (2 and (4 and (8 are in the time of 3; (3 and (6
+            # in 2; (5 (7 (9 in 3 for compound meters, otherwise 2
+            q = {2: 3, 3: 2, 4: 3, 6: 2, 8: 3}.get(p, 3 if compound else 2)
+        self.p = p
+        self.q = int(q)
+        self.r = int(r) if r else p
 
 class BodyField(Token):
     pass
@@ -507,15 +618,26 @@ class InlineField(Token):
     pass
 
 class Rest(Token):
-    def __init__(self, symbol, num, denom, **kwds):
+    def __init__(self, symbol, num, denom, time=None, **kwds):
         # char==X or Z means length is in measures
         Token.__init__(self, **kwds)
         self.symbol = symbol
+        self.time_sig = time
         self.length = (int(num) if num is not None else 1, int(denom) if denom is not None else 1)
 
     @property
     def duration(self):
+        """Length in units of the unit note length (L:), or in measures
+        for Z and X."""
         return self.length[0] / self.length[1]
+
+    @property
+    def abs_duration(self):
+        """Length as a fraction of a whole note."""
+        meter = self.time_sig._meter
+        if self.symbol in 'XZ' and meter is not None:
+            return self.duration * meter[0] / meter[1]
+        return self.duration * self.time_sig.unit_len
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this rest.
@@ -538,6 +660,19 @@ def note_length(num, slash, den):
     else:
         den = 1
     return (int(num) if num is not None else 1, den)
+
+
+def apply_tuplet(tuplet, notes):
+    """Scale the length of the notes (one note or rest, or all the notes of
+    a chord, which counts as one) by q/p for the tuplet in progress.
+    Returns the tuplet state [q, p, notes left], or None once it is done.
+    """
+    q, p, left = tuplet
+    for note in notes:
+        num, den = note.length
+        note.length = (num * q, den * p)
+    left -= 1
+    return [q, p, left] if left > 0 else None
 
 
 def dotted_length(length, n_dots, longer):
@@ -598,12 +733,28 @@ class Tune(object):
     def notes(self):
         return [t for t in self.tokens if isinstance(t, Note)]
 
+    @property
+    def bars(self):
+        """Tokens grouped by bar: a list of lists, each beginning with the
+        BarLine that opens it. Tokens before the first bar line (a pickup)
+        form a first group with no BarLine.
+        """
+        bars = [[]]
+        for token in self.tokens:
+            if isinstance(token, BarLine):
+                bars.append([])
+            bars[-1].append(token)
+        return [bar for bar in bars if bar]
+
     def parse_abc(self, abc):
         self.abc = abc
         header = []
         tune = []
         in_tune = False
         for line in abc.split('\n'):
+            # a %%directive is equivalent to an I: field (standard 11.0)
+            if line.startswith('%%'):
+                line = 'I:' + line[2:]
             line = strip_comment(line)
             line = line.strip()
             if line == '':
@@ -630,14 +781,17 @@ class Tune(object):
             "unit note length": "1/" + json['meter'].split('/')[1],
             "key": json['mode'],
         }
+        self.fields = list(self.header.items())
         self.parse_tune(json['abc'].split('\r\n'))
 
     def parse_header(self, header):
+        # every field in order (a field may repeat, e.g. several T: or I:)
+        self.fields = [(info_keys[line[0]].name, line[2:].strip()) for line in header]
         h = {}
-        for line in header:
-            key = line[0]
-            data = line[2:].strip()
-            h[info_keys[key].name] = data
+        for name, data in self.fields:
+            if name == 'tune title' and name in h:
+                continue    # the first T: is the title; later ones are alternatives
+            h[name] = data
         self.header = h
         self.reference = h['reference number']
         self.title = h['tune title']
@@ -665,6 +819,18 @@ class Tune(object):
         tempo = self.header.get('tempo', None)
         time_sig = TimeSignature(meter, unit, tempo)
 
+        # An accidental lasts until the end of the bar (standard 4.2). By
+        # default it applies to the note letter in every octave ("pitch");
+        # I:propagate-accidentals may select "octave" or "not" (11.3).
+        propagate = 'pitch'
+        for name, value in getattr(self, 'fields', []):
+            if name != 'instruction':
+                continue
+            m = re.match(r'propagate-accidentals\s+(not|octave|pitch)', value)
+            if m is not None:
+                propagate = m.group(1)
+        bar_acc = {}
+        prev_note = None
 
         tokens = []
         for i,line in enumerate(tune):
@@ -672,9 +838,16 @@ class Tune(object):
 
             if len(line) >= 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
                 tokens.append(BodyField(line=i, char=0, text=line))
+                if line[0] == 'K':
+                    key = Key(line[2:], base=key)
+                elif line[0] in 'MLQ':
+                    meter, unit, tempo = time_sig.update(line[0], line[2:])
+                    time_sig = TimeSignature(meter, unit, tempo)
                 continue
 
             pending_dots = None
+            chord_start = None   # index of the first token inside an open [ chord
+            tuplet = None        # [q, p, notes left] while inside a tuplet
             j = 0
             while j < len(line):
                 part = line[j:]
@@ -685,7 +858,10 @@ class Tune(object):
                     m = re.match(r'\[[%s]:([^\]]+)\]' % fields, part)
                     if m is not None:
                         if m.group()[1] == 'K':
-                            key = Key(m.group()[3:-1])
+                            key = Key(m.group()[3:-1], base=key)
+                        elif m.group()[1] in 'MLQ':
+                            meter, unit, tempo = time_sig.update(m.group()[1], m.group()[3:-1])
+                            time_sig = TimeSignature(meter, unit, tempo)
 
                         tokens.append(InlineField(line=i, char=j, text=m.group()))
                         j += m.end()
@@ -710,24 +886,68 @@ class Tune(object):
 
                     num, denom = note_length(g['num'], g['slash'], g['den'])
 
-                    tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
-                        octave=octave, num=num, denom=denom, line=i, char=j, text=m.group()))
+                    # accidental in force from earlier in the bar, or carried
+                    # over a tie from the previous note
+                    acc_key = g['note'].upper() if propagate == 'pitch' else (g['note'], octave)
+                    bar_accidental = None
+                    if g['acc'] is not None:
+                        if propagate != 'not':
+                            bar_acc[acc_key] = g['acc']
+                    else:
+                        bar_accidental = bar_acc.get(acc_key)
+                        if bar_accidental is None and prev_note is not None and prev_note.tie \
+                                and (prev_note.note, prev_note.octave) == (g['note'], octave):
+                            bar_accidental = prev_note.accidental or prev_note.bar_accidental
 
-                    if pending_dots is not None:
+                    tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
+                        octave=octave, num=num, denom=denom, bar_accidental=bar_accidental,
+                        line=i, char=j, text=m.group()))
+                    prev_note = tokens[-1]
+
+                    # (inside a chord the dots and tuplet are applied at the
+                    # closing bracket, to the chord as a whole)
+                    if pending_dots is not None and chord_start is None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
+                    if tuplet is not None and chord_start is None:
+                        tuplet = apply_tuplet(tuplet, [tokens[-1]])
 
                     j += m.end()
                     continue
 
-                # Beam  |   :|   |:   ||   and Chord  [ABC]
-                # An ending may list several passes:  |1  [1,3  |1-3  :|2,4
-                m = re.match(r'((?:[\]\|\:]|\[(?![A-Za-z]:))+)(\d+(?:[\-,]\d+)*|[\-,])?', part)
+                # Chord brackets  [ABC]  [ABC]2   (a '[' that starts a bar line
+                # or an ending, [| [1, is a bar line below)
+                if part[0] == '[' and re.match(r'\[[\|\d]', part) is None:
+                    tokens.append(ChordBracket(line=i, char=j, text='['))
+                    chord_start = len(tokens)
+                    j += 1
+                    continue
+                m = re.match(r"\](?P<num>\d+)?(?P<slash>/+)?(?P<den>\d+)?", part)
                 if m is not None:
-                    if m.group() in '[]':
-                        tokens.append(ChordBracket(line=i, char=j, text=m.group()))
-                    else:
-                        tokens.append(Beam(line=i, char=j, text=m.group()))
+                    g = m.groupdict()
+                    chord_notes = [] if chord_start is None else \
+                        [t for t in tokens[chord_start:] if isinstance(t, Note)]
+                    # a length on the chord multiplies the length of each note
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
+                    for note in chord_notes:
+                        note._length = (note.length[0] * num, note.length[1] * denom)
+                    tokens.append(ChordBracket(notes=chord_notes, line=i, char=j, text=m.group()))
+                    chord_start = None
+                    if pending_dots is not None:
+                        tokens[-1].dotify(pending_dots, 'right')
+                        pending_dots = None
+                    if tuplet is not None:
+                        tuplet = apply_tuplet(tuplet, chord_notes)
+                    j += m.end()
+                    continue
+
+                # Bar line  |   :|   |:   ||   |]   [|   [|]   ::
+                # An ending may list several passes:  |1  [1,3  |1-3  :|2,4
+                m = re.match(r'((?:\[\|\]|\|\]|\[\||[\|\:])+(?:\[(?=\d))?|\[(?=\d))(\d+(?:[\-,]\d+)*|[\-,])?', part)
+                if m is not None:
+                    tokens.append(BarLine(line=i, char=j, text=m.group()))
+                    bar_acc = {}
+                    chord_start = None   # a bar line ends an unclosed chord
                     j += m.end()
                     continue
 
@@ -735,7 +955,7 @@ class Tune(object):
                 k = len(tokens) - 1
                 while k >= 0 and isinstance(tokens[k], Space):
                     k -= 1
-                if k >= 0 and isinstance(tokens[k], (Note, Rest)):
+                if k >= 0 and isinstance(tokens[k], (Note, Rest, ChordBracket)) and chord_start is None:
                     m = re.match('<+|>+', part)
                     if m is not None:
                         tokens[k].dotify(m.group(), 'left')
@@ -748,19 +968,25 @@ class Tune(object):
                 if m is not None:
                     g = m.groupdict()
                     num, denom = note_length(g['num'], g['slash'], g['den'])
-                    tokens.append(Rest(g['sym'], num=num, denom=denom, line=i, char=j, text=m.group()))
+                    tokens.append(Rest(g['sym'], num=num, denom=denom, time=time_sig, line=i, char=j, text=m.group()))
 
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
                         pending_dots = None
+                    if tuplet is not None:
+                        tuplet = apply_tuplet(tuplet, [tokens[-1]])
 
                     j += m.end()
                     continue
 
-                # Tuplets  (must parse before slur)
-                m = re.match(r'\(([2-9])', part)
+                # Tuplets  (3  (3:2:4   (must parse before slur)
+                m = re.match(r'\(([2-9])(?::(\d*))?(?::(\d*))?', part)
                 if m is not None:
-                    tokens.append(Tuplet(num=m.groups()[0], line=i, char=j, text=m.group()))
+                    p, q, r = m.groups()
+                    meter = time_sig._meter
+                    compound = meter is not None and meter[0] % 3 == 0 and meter[0] > 3
+                    tokens.append(Tuplet(num=p, q=q, r=r, compound=compound, line=i, char=j, text=m.group()))
+                    tuplet = [tokens[-1].q, tokens[-1].p, tokens[-1].r]   # scale num, scale den, notes left
                     j += m.end()
                     continue
 
@@ -773,6 +999,14 @@ class Tune(object):
                 # Tie
                 if part[0] == '-':
                     tokens.append(Tie(line=i, char=j, text=part[0]))
+                    k = len(tokens) - 2
+                    while k >= 0 and isinstance(tokens[k], Space):
+                        k -= 1
+                    if k >= 0 and isinstance(tokens[k], Note):
+                        tokens[k].tie = True
+                    elif k >= 0 and isinstance(tokens[k], ChordBracket):
+                        for note in tokens[k].notes:
+                            note.tie = True
                     j += 1
                     continue
 
