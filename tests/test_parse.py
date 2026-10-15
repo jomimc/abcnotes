@@ -1,0 +1,57 @@
+"""
+Tests for parsing whole tunes from ABC text
+"""
+
+import pytest
+
+import pyabc
+
+
+def tune(body, **fields):
+    """Build a minimal tune. Header fields are given as keyword arguments
+    using the field letter, e.g. M='6/8'; K defaults to C.
+    """
+    fields.setdefault('K', 'C')
+    header = ''.join('%s:%s\n' % (k, v) for k, v in fields.items())
+    return pyabc.Tune(abc='X:1\nT:test\n' + header + body + '\n')
+
+
+# --- meter and unit note length -------------------------------------------
+
+@pytest.mark.parametrize('meter, expected', [
+    ('4/4', (4, 4)),
+    ('6/8', (6, 8)),
+    ('C', (4, 4)),
+    ('C|', (2, 2)),
+    ('(2+3)/8', (5, 8)),
+    ('2+2+2+3/16', (9, 16)),
+    ('none', None),
+    (' 3/4 ', (3, 4)),
+])
+def test_parse_meter(meter, expected):
+    assert pyabc.parse_meter(meter) == expected
+
+
+def test_parse_meter_invalid():
+    with pytest.raises(ValueError):
+        pyabc.parse_meter('abc')
+
+
+@pytest.mark.parametrize('fields, unit', [
+    (dict(M='C'), [1, 8]),           # no L: with common time
+    (dict(M='C|'), [1, 8]),
+    (dict(M='6/8'), [1, 8]),
+    (dict(M='2/4'), [1, 16]),        # meter < 0.75
+    (dict(M='2+2+2+3/16'), [1, 16]),
+    (dict(M='none'), [1, 8]),
+    (dict(), [1, 8]),                # no M: at all
+    (dict(M='none', L='1/4'), [1, 4]),
+    (dict(L='1/16'), [1, 16]),
+])
+def test_default_unit_note_length(fields, unit):
+    t = tune('A B', **fields)
+    assert t.notes[0].time_sig._unit_len == unit
+
+
+def test_free_meter_repr():
+    assert repr(tune('A', M='none').notes[0].time_sig) == '<TimeSignature free>'

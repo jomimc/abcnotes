@@ -304,15 +304,34 @@ class Pitch(object):
         return Pitch(self.value-x, octave=self.octave)
 
 
+def parse_meter(meter):
+    """Convert a meter string like "6/8", "C", "C|", "(2+3)/8" or "none"
+    to a (numerator, denominator) tuple, or None for free meter.
+    """
+    meter = meter.strip()
+    if meter in ('none', 'free', ''):
+        return None
+    if meter == 'C':
+        return (4, 4)
+    if meter == 'C|':
+        return (2, 2)
+    m = re.match(r'\(?(\d+(?:\+\d+)*)\)?/(\d+)$', meter)
+    if m is None:
+        raise ValueError('Invalid meter "%s"' % meter)
+    num = sum(int(x) for x in m.group(1).split('+'))
+    return (num, int(m.group(2)))
+
+
 class TimeSignature(object):
     def __init__(self, meter, unit_len, tempo=None):
-        meter = meter.replace('C|', '2/2').replace('C', '4/4')
-        self._meter = [int(x) for x in meter.split('/')]
+        self._meter = parse_meter(meter)
         self._unit_len = [int(x) for x in unit_len.split('/')]
         self._tempo = tempo
 
     def __repr__(self):
-        return "<TimeSignature %d/%d>" % tuple(self._meter)
+        if self._meter is None:
+            return "<TimeSignature free>"
+        return "<TimeSignature %d/%d>" % self._meter
 
 
 # Decoration symbols from
@@ -602,8 +621,11 @@ class Tune(object):
         meter = self.header.get('meter', 'free')
         unit = self.header.get('unit note length', None)
         # determine default unit note length from meter if possible
-        if unit is None and meter != 'free':
-            if eval(meter) < 0.75:
+        # (standard 3.1.7: 1/16 if the meter is less than 0.75, else 1/8;
+        # 1/8 if there is no meter)
+        if unit is None:
+            m = parse_meter(meter)
+            if m is not None and m[0] / m[1] < 0.75:
                 unit = "1/16"
             else:
                 unit = "1/8"
