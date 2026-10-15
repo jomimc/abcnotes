@@ -585,11 +585,11 @@ class Tune(object):
             if in_tune:
                 tune.append(line)
             else:
-                if line[0] in info_keys and line[1] == ':':
+                if len(line) > 1 and line[0] in info_keys and line[1] == ':':
                     header.append(line)
                     if line[0] == 'K':
                         in_tune = True
-                elif line[:2] == '+:':
+                elif line[:2] == '+:' and header:
                     header[-1] += ' ' + line[2:]
 
         self.parse_header(header)
@@ -644,7 +644,7 @@ class Tune(object):
         for i,line in enumerate(tune):
             line = strip_comment(line).rstrip()
 
-            if len(line) > 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
+            if len(line) >= 2 and line[1] == ':' and (line[0] == '+' or line[0] in tune_body_fields):
                 tokens.append(BodyField(line=i, char=0, text=line))
                 continue
 

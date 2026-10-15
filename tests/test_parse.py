@@ -81,6 +81,26 @@ def test_comment_in_body():
     assert any(isinstance(tok, pyabc.Beam) for tok in t.tokens)
 
 
+# --- field lines -------------------------------------------------------------
+
+def test_empty_body_field_line():
+    # W: lyrics after the body, including an empty W: line
+    t = tune('AB|\nW:some words\nW:\nw:\nCD|')
+    assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
+    fields = [tok._text for tok in t.tokens if isinstance(tok, pyabc.BodyField)]
+    assert fields == ['W:some words', 'W:', 'w:']
+
+
+def test_one_char_header_line_is_ignored():
+    t = pyabc.Tune(abc='X:1\nT:test\nZ\nK:C\nAB\n')
+    assert [n.note for n in t.notes] == ['A', 'B']
+
+
+def test_leading_continuation_line_is_ignored():
+    t = pyabc.Tune(abc='+:stray\nX:1\nT:test\nK:C\nAB\n')
+    assert t.header['tune title'] == 'test'
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
