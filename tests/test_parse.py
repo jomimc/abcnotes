@@ -165,13 +165,42 @@ def test_unterminated_quote_still_fails():
     ('G transpose=-2', 'G', 'major', {'F': '#'}),
     ('clef=bass', 'C', 'major', {}),
     ('clef=bass middle=d', 'C', 'major', {}),
-    ('D exp ^f ^c', 'D', 'major', {'F': '#', 'C': '#'}),   # explicit accidentals not yet applied
-    ('F ^f', 'F', 'major', {'B': 'b'}),                    # explicit accidentals not yet applied
 ])
 def test_key_specifiers(key, root, mode, accidentals):
     k = pyabc.Key(key)
     assert (k.root.name, k.mode) == (root, mode)
     assert k.accidentals == accidentals
+
+
+@pytest.mark.parametrize('key, accidentals', [
+    ('D ^g', {'F': '#', 'C': '#', 'G': '#'}),
+    ('D =c', {'F': '#', 'C': ''}),
+    ('D _b', {'F': '#', 'C': '#', 'B': 'b'}),
+    ('F ^f', {'B': 'b', 'F': '#'}),
+    ('C ^^f __b', {'F': '##', 'B': 'bb'}),
+    ('D exp ^f', {'F': '#'}),                    # exp: no key signature, only these
+    ('D exp', {}),
+    ('D clef=bass ^g', {'F': '#', 'C': '#', 'G': '#'}),
+    ('Dmix ^g', {'F': '#', 'G': '#'}),
+])
+def test_key_explicit_accidentals(key, accidentals):
+    assert pyabc.Key(key).accidentals == accidentals
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('g c', [20, 13]),                  # K:D ^g: G# and C#
+    ('f [K:=f] f', [18, 17]),           # accidentals-only inline key modifies the current key
+    ('f [K:=f] c', [18, 13]),           # ...without touching the rest of the signature
+    ('f [K:=f] [K:^c] c f', [18, 13, 17]),
+    ('f [K:G] f', [18, 18]),            # a full inline key replaces it
+    ('f [K:G] [K:=f] f', [18, 17]),
+])
+def test_key_accidentals_in_body(body, expected):
+    assert pitches(body, K='D ^g') == expected
+
+
+def test_double_sharp_key_signature_pitch():
+    assert pitches('f', K='C ^^f') == [19]
 
 
 def test_key_field_with_comment():

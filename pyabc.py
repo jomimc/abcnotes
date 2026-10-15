@@ -95,7 +95,9 @@ inline_fields = {k:v for k,v in info_keys.items() if v.inline}
 
 # map natural note letters to chromatic values
 pitch_values = {'C': 0, 'D': 2, 'E': 4, 'F': 5, 'G': 7, 'A': 9, 'B': 11, }
-accidental_values = {'': 0, '#': 1, 'b': -1}
+accidental_values = {'': 0, '#': 1, 'b': -1, '##': 2, 'bb': -2}
+# accidental written in a K: field (K:D ^g) -> accidental name used above
+key_accidental_names = {'=': '', '^': '#', '^^': '##', '_': 'b', '__': 'bb'}
 # semitone offset of an accidental written on a note inside the tune body
 note_accidental_values = {'=': 0, '^': 1, '^^': 2, '_': -1, '__': -2}
 for n,v in list(pitch_values.items()):
@@ -121,19 +123,35 @@ flat_order = "BEADGCF"
 
 
 class Key(object):
-    def __init__(self, name=None, root=None, mode=None):
+    def __init__(self, name=None, root=None, mode=None, base=None):
+        # accidentals written after the tonic (K:D ^g):  letter -> '#', 'b', ''
+        self.extra_accidentals = {}
+        # K:D exp ^f ^c  means only the explicit accidentals, no key signature
+        self.explicit_only = False
         if name is not None:
-            self.root, self.mode = self.parse_key(name)
+            self.root, self.mode = self.parse_key(name, base)
             assert root is None and mode is None
         else:
             self.root = Pitch(root)
             self.mode = mode
 
-    def parse_key(self, key):
+    def parse_key(self, key, base=None):
         key = key.strip()
+        self.explicit_only = re.search(r'\bexp\b', key) is not None
         # drop clef and other specifiers:  clef=bass  middle=d  transpose=-2
         # bare clef names, and the "exp" (explicit accidentals) keyword
         key = re.sub(r'\s*\b(\w+=\S*|treble|alto|tenor|bass|perc|exp)\b', '', key).strip()
+        # explicit accidentals after the tonic:  K:D ^g   K:F =b   K:C exp ^f
+        for acc, letter in re.findall(r'(\^\^|\^|__|_|=)([a-gA-G])', key):
+            self.extra_accidentals[letter.upper()] = key_accidental_names[acc]
+        key = re.sub(r'\s*(\^\^|\^|__|_|=)[a-gA-G]', '', key).strip()
+        # accidentals only, e.g. an inline [K:=f]: modify the current key
+        if key == '' and base is not None:
+            accidentals = dict(base.extra_accidentals)
+            accidentals.update(self.extra_accidentals)
+            self.extra_accidentals = accidentals
+            self.explicit_only = base.explicit_only
+            return base.root, base.mode
         # no key signature (K:none, or an empty K: field)
         if key in ['', 'none']:
             return Pitch('C'), 'major'
@@ -187,9 +205,12 @@ class Key(object):
 
     @property
     def accidentals(self):
-        """A dictionary of accidentals in the key signature.
+        """A dictionary of accidentals in the key signature, including any
+        written explicitly in the K: field.
         """
-        return {p:a for p,a in self.key_signature}
+        acc = {} if self.explicit_only else {s[0]: s[1:] for s in self.key_signature}
+        acc.update(self.extra_accidentals)
+        return acc
 
     @property
     def relative_ionian(self):
@@ -727,7 +748,7 @@ class Tune(object):
                     m = re.match(r'\[[%s]:([^\]]+)\]' % fields, part)
                     if m is not None:
                         if m.group()[1] == 'K':
-                            key = Key(m.group()[3:-1])
+                            key = Key(m.group()[3:-1], base=key)
 
                         tokens.append(InlineField(line=i, char=j, text=m.group()))
                         j += m.end()
