@@ -130,9 +130,16 @@ class Key(object):
 
     def parse_key(self, key):
         key = key.strip()
-        # highland pipe keys
+        # drop clef and other specifiers:  clef=bass  middle=d  transpose=-2
+        # bare clef names, and the "exp" (explicit accidentals) keyword
+        key = re.sub(r'\s*\b(\w+=\S*|treble|alto|tenor|bass|perc|exp)\b', '', key).strip()
+        # no key signature (K:none, or an empty K: field)
+        if key in ['', 'none']:
+            return Pitch('C'), 'major'
+        # highland pipe keys: F# and C# (with G natural), i.e. the D signature.
+        # HP displays no signature and Hp displays it; the pitches are the same.
         if key in ['HP', 'Hp']:
-            return {'F': 1, 'C': 1, 'G': 0}
+            return Pitch('D'), 'major'
 
         m = re.match(r'([A-G])(\#|b)?\s*(\w+)?(.*)', key)
         if m is None:

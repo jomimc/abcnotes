@@ -151,6 +151,34 @@ def test_unterminated_quote_still_fails():
         tune('"G A B')
 
 
+# --- key field ---------------------------------------------------------------
+
+@pytest.mark.parametrize('key, root, mode, accidentals', [
+    ('none', 'C', 'major', {}),
+    ('', 'C', 'major', {}),
+    ('HP', 'D', 'major', {'F': '#', 'C': '#'}),
+    ('Hp', 'D', 'major', {'F': '#', 'C': '#'}),
+    ('D clef=bass', 'D', 'major', {'F': '#', 'C': '#'}),
+    ('D clef=bass middle=d', 'D', 'major', {'F': '#', 'C': '#'}),
+    ('Dmaj clef=treble', 'D', 'major', {'F': '#', 'C': '#'}),
+    ('Am treble', 'A', 'minor', {}),
+    ('G transpose=-2', 'G', 'major', {'F': '#'}),
+    ('clef=bass', 'C', 'major', {}),
+    ('clef=bass middle=d', 'C', 'major', {}),
+    ('D exp ^f ^c', 'D', 'major', {'F': '#', 'C': '#'}),   # explicit accidentals not yet applied
+    ('F ^f', 'F', 'major', {'B': 'b'}),                    # explicit accidentals not yet applied
+])
+def test_key_specifiers(key, root, mode, accidentals):
+    k = pyabc.Key(key)
+    assert (k.root.name, k.mode) == (root, mode)
+    assert k.accidentals == accidentals
+
+
+def test_key_field_with_comment():
+    t = tune('A', K='D % and Dm')
+    assert t.notes[0].key.root.name == 'D'
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
