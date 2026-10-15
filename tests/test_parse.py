@@ -217,6 +217,29 @@ def test_rest_symbol_and_length():
     assert [(x.symbol, x.length) for x in r] == [('Z', (2, 1)), ('z', (1, 2))]
 
 
+# --- decorations and ignorable symbols ---------------------------------------
+
+def kinds(body):
+    return [type(tok).__name__ for tok in tune(body).tokens
+            if not isinstance(tok, (pyabc.Space, pyabc.Newline))]
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('.A ~B HC', ['Decoration', 'Note', 'Decoration', 'Note', 'Decoration', 'Note']),
+    ('JA RB uC vD', ['Decoration', 'Note'] * 4),         # U:-definable letters
+    ('!trill!A +trill+B', ['Decoration', 'Note', 'Decoration', 'Note']),
+    ('A&B', ['Note', 'VoiceOverlay', 'Note']),
+    ('A y B $ C`D', ['Note', 'Ignored', 'Note', 'Ignored', 'Note', 'Ignored', 'Note']),
+    ('A # B * C ; D ? E @ F', ['Note', 'Ignored'] * 5 + ['Note']),
+])
+def test_decorations_and_ignored(body, expected):
+    assert kinds(body) == expected
+
+
+def test_rests_and_spacer_are_not_decorations():
+    assert kinds('x z y') == ['Rest', 'Rest', 'Ignored']
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}

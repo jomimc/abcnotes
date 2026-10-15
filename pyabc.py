@@ -486,6 +486,14 @@ class Decoration(Token):
     """  .~HLMOPSTuv  """
     pass
 
+class VoiceOverlay(Token):
+    """   &   """
+    pass
+
+class Ignored(Token):
+    """  typesetting-only or reserved characters:  y $ ` # * ; ? @  """
+    pass
+
 class Tuplet(Token):
     """  (5   """
     def __init__(self, num, **kwds):
@@ -775,17 +783,32 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Decorations (single character)
-                if part[0] in '.~HLMOPSTuv':
+                # Decorations (single character: . ~ and the letters H-W h-w,
+                # which U: may redefine; x z are rests and y is the spacer)
+                if part[0] in '.~HIJKLMNOPQRSTUVWhijklmnopqrstuvw':
                     tokens.append(Decoration(line=i, char=j, text=part[0]))
                     j += 1
                     continue
 
-                # Decorations (!symbol!)
-                m = re.match(r'\!([^\! ]+)\!', part)
+                # Decorations (!symbol!  or the older +symbol+)
+                m = re.match(r'\!([^\! ]+)\!|\+([^\+ ]+)\+', part)
                 if m is not None:
                     tokens.append(Decoration(line=i, char=j, text=m.group()))
                     j += m.end()
+                    continue
+
+                # Voice overlay  &
+                if part[0] == '&':
+                    tokens.append(VoiceOverlay(line=i, char=j, text='&'))
+                    j += 1
+                    continue
+
+                # Typesetting-only symbols: y spacer, $ line break, ` beam
+                # hint; and the reserved characters # * ; ? @, which the
+                # standard says to ignore
+                if part[0] in 'y$`#*;?@':
+                    tokens.append(Ignored(line=i, char=j, text=part[0]))
+                    j += 1
                     continue
 
                 # Continuation
