@@ -246,6 +246,41 @@ def test_rests_and_spacer_are_not_decorations():
     assert kinds('x z y') == ['Rest', 'Rest', 'Ignored']
 
 
+# --- header fields -----------------------------------------------------------
+
+def test_fields_keep_every_field_in_order():
+    t = pyabc.Tune(abc='X:1\nT:First\nT:Second\nI:linebreak $\n%%propagate-accidentals not\nK:C\nA\n')
+    assert t.fields == [('reference number', '1'), ('tune title', 'First'),
+                        ('tune title', 'Second'), ('instruction', 'linebreak $'),
+                        ('instruction', 'propagate-accidentals not'), ('key', 'C')]
+    assert t.header['tune title'] == 'First'
+    assert t.title == 'First'
+
+
+def test_fields_on_json_path():
+    rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
+           'mode': 'Dmajor', 'abc': 'A'}
+    assert ('key', 'Dmajor') in pyabc.Tune(json=rec).fields
+
+
+@pytest.mark.parametrize('q, expected', [
+    ('1/4=120', ((1, 4), 120, '')),
+    ('120', (None, 120, '')),
+    ('"Allegro"', (None, None, 'Allegro')),
+    ('"Slow" 1/4=60', ((1, 4), 60, 'Slow')),
+    ('3/8 3/8 2/8=40', ((1, 1), 40, '')),
+    ('1/4 3/8 1/4=40', ((7, 8), 40, '')),
+    ('', (None, None, '')),
+])
+def test_parse_tempo(q, expected):
+    assert pyabc.parse_tempo(q) == expected
+
+
+def test_tempo_reaches_time_signature():
+    t = tune('A', Q='1/4=120')
+    assert t.notes[0].time_sig._tempo == ((1, 4), 120, '')
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}

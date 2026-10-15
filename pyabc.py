@@ -1,5 +1,6 @@
 from __future__ import division
 import re, sys
+from fractions import Fraction
 
 
 str_type = str if sys.version > '3' else basestring
@@ -329,11 +330,29 @@ def parse_meter(meter):
     return (num, int(m.group(2)))
 
 
+def parse_tempo(tempo):
+    """Split a Q: field into (beat, bpm, text):  Q:1/4=120 -> ((1,4), 120, '')
+    Q:120 -> (None, 120, '')   Q:"Allegro" -> (None, None, 'Allegro')
+    Q:3/8 3/8 2/8=40 -> ((8,8), 40, '')  (the beat is the sum).
+    """
+    tempo = tempo.strip()
+    text = ' '.join(re.findall(r'"([^"]*)"', tempo))
+    tempo = re.sub(r'"[^"]*"', '', tempo).strip()
+    m = re.match(r'(?:((?:\d+/\d+\s*)+)=)?\s*(\d+)$', tempo)
+    if m is None:
+        return (None, None, text)
+    beat = None
+    if m.group(1) is not None:
+        total = sum(Fraction(b) for b in m.group(1).split())
+        beat = (total.numerator, total.denominator)
+    return (beat, int(m.group(2)), text)
+
+
 class TimeSignature(object):
     def __init__(self, meter, unit_len, tempo=None):
         self._meter = parse_meter(meter)
         self._unit_len = [int(x) for x in unit_len.split('/')]
-        self._tempo = tempo
+        self._tempo = parse_tempo(tempo) if tempo is not None else None
 
     def __repr__(self):
         if self._meter is None:
@@ -604,6 +623,9 @@ class Tune(object):
         tune = []
         in_tune = False
         for line in abc.split('\n'):
+            # a %%directive is equivalent to an I: field (standard 11.0)
+            if line.startswith('%%'):
+                line = 'I:' + line[2:]
             line = strip_comment(line)
             line = line.strip()
             if line == '':
@@ -630,14 +652,17 @@ class Tune(object):
             "unit note length": "1/" + json['meter'].split('/')[1],
             "key": json['mode'],
         }
+        self.fields = list(self.header.items())
         self.parse_tune(json['abc'].split('\r\n'))
 
     def parse_header(self, header):
+        # every field in order (a field may repeat, e.g. several T: or I:)
+        self.fields = [(info_keys[line[0]].name, line[2:].strip()) for line in header]
         h = {}
-        for line in header:
-            key = line[0]
-            data = line[2:].strip()
-            h[info_keys[key].name] = data
+        for name, data in self.fields:
+            if name == 'tune title' and name in h:
+                continue    # the first T: is the title; later ones are alternatives
+            h[name] = data
         self.header = h
         self.reference = h['reference number']
         self.title = h['tune title']
