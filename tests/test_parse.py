@@ -179,6 +179,44 @@ def test_key_field_with_comment():
     assert t.notes[0].key.root.name == 'D'
 
 
+# --- note and rest lengths, broken rhythm ------------------------------------
+
+def durations(body):
+    return [tok.duration for tok in tune(body).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('A A2 A3', [1, 2, 3]),
+    ('A/ A// A/// A/4 A3/2 A2/3', [0.5, 0.25, 0.125, 0.25, 1.5, 2 / 3]),
+    ('z z2 z/ z// z3/2 Z Z2 x x/', [1, 2, 0.5, 0.25, 1.5, 1, 2, 1, 0.5]),
+])
+def test_lengths(body, expected):
+    assert durations(body) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize('body, expected', [
+    ('A>B', [1.5, 0.5]),
+    ('A<B', [0.5, 1.5]),
+    ('A>>B', [1.75, 0.25]),
+    ('A<<B', [0.25, 1.75]),
+    ('A>>>B', [1.875, 0.125]),
+    ('A2>B', [3, 0.5]),
+    ('A>B2', [1.5, 1]),
+    ('A > B', [1.5, 0.5]),
+    ('A >B C< D', [1.5, 0.5, 0.5, 1.5]),
+    ('A>B C<D', [1.5, 0.5, 0.5, 1.5]),      # a later < must not flip the first >
+    ('z>A A>z', [1.5, 0.5, 1.5, 0.5]),
+    ('A>B|C>D', [1.5, 0.5, 1.5, 0.5]),
+])
+def test_broken_rhythm(body, expected):
+    assert durations(body) == pytest.approx(expected)
+
+
+def test_rest_symbol_and_length():
+    r = [tok for tok in tune('Z2 z/').tokens if isinstance(tok, pyabc.Rest)]
+    assert [(x.symbol, x.length) for x in r] == [('Z', (2, 1)), ('z', (1, 2))]
+
+
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}

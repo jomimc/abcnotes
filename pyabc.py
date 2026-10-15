@@ -441,15 +441,7 @@ class Note(Token):
         longer = direction == 'left'
         if '<' in dots:
             longer = not longer
-        n_dots = len(dots)
-        num, den = self.length
-        if longer:
-            num = num * 3
-            den = den * 2
-            self._length = (num, den)
-        else:
-            den = den * 2
-            self._length = (num, den)
+        self._length = dotted_length(self.length, len(dots), longer)
 
 
 
@@ -511,7 +503,11 @@ class Rest(Token):
         # char==X or Z means length is in measures
         Token.__init__(self, **kwds)
         self.symbol = symbol
-        self.length = (num, denom)
+        self.length = (int(num) if num is not None else 1, int(denom) if denom is not None else 1)
+
+    @property
+    def duration(self):
+        return self.length[0] / self.length[1]
 
     def dotify(self, dots, direction):
         """Apply dot(s) to the duration of this rest.
@@ -520,16 +516,31 @@ class Rest(Token):
         longer = direction == 'left'
         if '<' in dots:
             longer = not longer
-        num, den = self.length
-        num = 1 if num is None else int(num)
-        den = 1 if den is None else int(den)
-        if longer:
-            # a dot multiplies the duration by 3/2 (see Note.dotify)
-            num = num * 3
-            den = den * 2
-        else:
-            den = den * 2
-        self.length = (num, den)
+        self.length = dotted_length(self.length, len(dots), longer)
+
+
+def note_length(num, slash, den):
+    """Length (num, den) of a note or rest from the matched pieces of its
+    length string:  A2 -> (2,1)   A/ -> (1,2)   A// -> (1,4)   A3/2 -> (3,2)
+    """
+    if den is not None:
+        den = int(den)
+    elif slash is not None:
+        den = 2 ** len(slash)
+    else:
+        den = 1
+    return (int(num) if num is not None else 1, den)
+
+
+def dotted_length(length, n_dots, longer):
+    """Length (num, den) after a broken rhythm of n_dots '>' or '<' marks.
+    One mark multiplies the longer side by 3/2 and the shorter by 1/2;
+    two marks give 7/4 and 1/4; and so on.
+    """
+    num, den = length
+    if longer:
+        return (num * (2 ** (n_dots + 1) - 1), den * 2 ** n_dots)
+    return (num, den * 2 ** n_dots)
 
 
 class InfoContext(object):
@@ -689,13 +700,7 @@ class Tune(object):
                         octave -= g['oct'].count(",")
                         octave += g['oct'].count("'")
 
-                    num = g.get('num', 1)
-                    if g['den'] is not None:
-                        denom = g['den']
-                    elif g['slash'] is not None:
-                        denom = 2 * g['slash'].count('/')
-                    else:
-                        denom = 1
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
 
                     tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
                         octave=octave, num=num, denom=denom, line=i, char=j, text=m.group()))
@@ -718,20 +723,24 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                # Broken rhythm
-                if len(tokens) > 0 and isinstance(tokens[-1], (Note, Rest)):
+                # Broken rhythm  (spaces are allowed around the marks:  A > B)
+                k = len(tokens) - 1
+                while k >= 0 and isinstance(tokens[k], Space):
+                    k -= 1
+                if k >= 0 and isinstance(tokens[k], (Note, Rest)):
                     m = re.match('<+|>+', part)
                     if m is not None:
-                        tokens[-1].dotify(part, 'left')
-                        pending_dots = part
+                        tokens[k].dotify(m.group(), 'left')
+                        pending_dots = m.group()
                         j += m.end()
                         continue
 
                 # Rest
-                m = re.match(r'([XZxz])(\d+)?(/(\d+)?)?', part)
+                m = re.match(r"(?P<sym>[XZxz])(?P<num>\d+)?(?P<slash>/+)?(?P<den>\d+)?", part)
                 if m is not None:
-                    g = m.groups()
-                    tokens.append(Rest(g[0], num=g[1], denom=g[3], line=i, char=j, text=m.group()))
+                    g = m.groupdict()
+                    num, denom = note_length(g['num'], g['slash'], g['den'])
+                    tokens.append(Rest(g['sym'], num=num, denom=denom, line=i, char=j, text=m.group()))
 
                     if pending_dots is not None:
                         tokens[-1].dotify(pending_dots, 'right')
