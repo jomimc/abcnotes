@@ -1,0 +1,74 @@
+% Three tunes from 18th-century printed country-dance books, copied from
+% David Jacobs' ABC_TuneBooks collection:
+%   https://github.com/Gubbledenut/ABC_TuneBooks
+% The collection is released under CC0 1.0 Universal (see its LICENSE.txt).
+% Each tune keeps the header fields of its source file; an N: line names
+% the file it was taken from.
+
+X: 79
+T: the Feathers
+%%VWML:Thompsons1776-2256e-p40-0
+F:http://www.vwml.org/record/Thompsons1776/2256e/p40
+B: Chas & Sam Thompson "Twenty Four Country Dances for the Year 1776", London 1776, p.40 #1
+F: http://www.vwml.org/browse/browse-collections-dance-tune-books/browse-thompsons1776#
+Z: 2014 John Chambers <jc:trillian.mit.edu> (added dance description)
+N: From Thompson1776.abc in the ABC_TuneBooks collection (CC0 1.0)
+M: 2/4
+L: 1/16
+K: Bb
+%-----------------------------
+|:\
+B3dB2G2 | F2E2F2B2 | c2G2A2B2 | c4 B4 |\
+bbaa ggff | eedd ccBB | AAGG FFEE | DDCC B,4 :|
+|:\
+d2e2f2B2 | d2c2e2d2 | d2e2f2B2 | d2c2e2d2 |\
+(gfga) (b2d2) | gfga b2e2 | d4 Tc4 | B8 :|
+|:\
+B,CDE FEDC | B,CDE FEDC | B,CDE FGAB | A2F2 F4 |\
+B2c2 B2F2 | d2B2e2c2 | f2g2f2d2 | c2B2 B4 :|
+|:\
+B4 d2B2 | e2c2 ABcA | B4 d2B2 | f2e2d2c2 |\
+B4 d2B2 | e2c2 ABcA |[1 c2d2c2d2 | d4 c4 :|[2 F2B2 d2c2 | c4 B4 |]
+
+X: 13
+T: Merry Coblers
+%%VWML:Skillerns1780-2277i-p7-0
+F:http://www.vwml.org/record/Skillerns1780/2277i/p7
+%R: reel
+B: "Twenty Four Country Dances for the Year 1780", Thomas Skillern, ed. p.7 #1
+F: http://www.vwml.org/browse/browse-collections-dance-tune-books/browse-skillerns1780#
+Z: 2014 John Chambers <jc:trillian.mit.edu>
+N: From Skillern1780.abc in the ABC_TuneBooks collection (CC0 1.0); a stray %%endtext after the dance description was dropped
+M: C|
+L: 1/8
+K: D
+A |\
+FD F/G/A d2df | d2fd eEEA |\
+FD F/G/A d2dg | faef dDD ::g |\
+fdef aeef |
+fdgf eEEg |\
+[1 fdfg aeeg | fdec dDD :|\
+[2 fdge afge | fdec dDD |]
+W:
+W:  Hands across quite round .|. Back again :|.
+W:Lead down two Cu .|: up again Cast off :|: set 3
+W:and 3 top and Bottom .||. the same sideways :||.
+W:hands Six Round .||: Lead thro' the top and
+W:Cast off :||:
+
+X:193
+T:Drunken Friday. Ru2.193
+%%VWML:RutherfordVol2-2249-p97-0
+F:http://www.vwml.org/record/RutherfordVol2/2249/p97
+Z:vmp.Ruairidh Greig 2015 www.village-music-project.org.uk
+N:From RutherfordVol1-2249.abc in the ABC_TuneBooks collection (CC0 1.0)
+M:C
+L:1/8
+Q:1/4=100
+K:D
+A|d/d/d "tr"f>e dAAB|cdcA G/F/E/D/ CD|d/d/d "tr"f>e dAAB|cGcE D/D/D D:|
+|:A|(F/G/A) FD (F/G/A) dF|(E/F/G) EC (E/F/G) cE|1(F/G/A) FD F/G/A dF|
+G/F/E/D/ CE D/D/D D:|2dBcA BGcE|CEcE D/D/D D||
+W:Foot it & cast off 2 Couples .| Foot it & cast up again
+W:gallop down 2 Couples up again & cast off .|. Right
+W:Hand & Left with the top Couple :|

@@ -5,3 +5,4 @@ build/
 dist/
 .abc
 .ABC
+!tests/fixtures/*.abc
