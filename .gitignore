@@ -1,5 +1,7 @@
 *.pyc
 tunes.json
-pyabc.egg-info
+abcnotes.egg-info
+build/
+dist/
 .abc
 .ABC
