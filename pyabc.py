@@ -1,6 +1,7 @@
 from __future__ import division
 import re, sys
 from fractions import Fraction
+from collections import namedtuple
 
 
 str_type = str if sys.version > '3' else basestring
@@ -472,7 +473,7 @@ class Token(object):
 
 
 class Note(Token):
-    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, **kwds):
+    def __init__(self, key, time, note, accidental, octave, num, denom, bar_accidental=None, grace=False, **kwds):
         Token.__init__(self, **kwds)
         self.key = key
         self.time_sig = time
@@ -482,6 +483,7 @@ class Note(Token):
         self.octave = octave
         self._length = (num, denom)
         self.tie = False                      # tied to the following note
+        self.grace = grace                    # a grace note, inside {...}
 
     @property
     def pitch(self):
@@ -591,6 +593,10 @@ class Decoration(Token):
 
 class VoiceOverlay(Token):
     """   &   """
+    pass
+
+class Unknown(Token):
+    """  a character the tokenizer could not interpret (strict=False only)  """
     pass
 
 class Ignored(Token):
@@ -703,6 +709,249 @@ class InfoContext(object):
         return f2
 
 
+def parse_parts(spec):
+    """Expand a P: field into the sequence of part names:
+    'ABAB' -> ['A','B','A','B']   'A3' -> ['A','A','A']
+    '(AB)3.C' -> ['A','B','A','B','A','B','C']   (dots are ignored)
+    """
+    def parse(i):
+        out = []
+        while i < len(spec):
+            c = spec[i]
+            if c == ')':
+                return out, i + 1
+            if c == '(':
+                sub, i = parse(i + 1)
+            elif c in '. \t':
+                i += 1
+                continue
+            else:
+                sub, i = [c], i + 1
+            m = re.match(r'\d+', spec[i:])
+            if m is not None:
+                sub = sub * int(m.group())
+                i += m.end()
+            out.extend(sub)
+        return out, i
+    return parse(0)[0]
+
+
+class RepeatError(ValueError):
+    """The repeat structure of a tune is ambiguous or unsupported, so its
+    playback order cannot be determined (see check_repeats())."""
+
+
+def _colons(text):
+    """(repeats started, repeats ended) by a bar line's colons:
+    |: (1, 0)   :| (0, 1)   :: (1, 1)   |:: (2, 0)   ::| (0, 2)
+    """
+    if text.strip(':') == '':         # ::
+        return 1, 1
+    lead = len(text) - len(text.lstrip(':'))
+    trail = len(text) - len(text.rstrip(':'))
+    return trail, lead
+
+
+def _section(bars, start):
+    """For the repeated section beginning at bars[start], return (index of
+    the first bar after the section, number of passes, problems) where
+    problems is a list of (bar index, message) for anything that makes
+    the section's meaning ambiguous. A section ends at the next |:, at a
+    bare :|, at the end of its last ending, or (if it has no |: of its
+    own) at a double bar.
+    """
+    problems = []
+    bl0 = bars[start][0] if isinstance(bars[start][0], BarLine) else None
+    explicit = bl0 is not None and bl0.repeat_start
+    start_passes = _colons(bl0._text)[0] + 1 if explicit else 0   # |:: repeats 3 times (4.8)
+    passes = 1
+    seen_end = has_notes = False
+    endings = []                   # (bar index, ending numbers) in order
+    after_last_ending = None       # first plain bar line after the last ending began
+    end = len(bars)
+    for i in range(start, len(bars)):
+        bl = bars[i][0]
+        if not isinstance(bl, BarLine):
+            has_notes = has_notes or not _is_empty(bars[i])
+            continue
+        if bl.endings is not None and not has_notes:
+            problems.append((i, 'ending at the start of a section'))
+        has_notes = has_notes or not _is_empty(bars[i])
+        if i == start:
+            if bl.endings is not None:
+                endings.append((i, bl.endings))
+            continue
+        if bl.repeat_start or (bl.repeat_end and bl.endings is None):
+            if bl.repeat_end and endings and _is_empty(bars[i]) and _starts_ending(bars, i + 1):
+                seen_end = True    # |1 B :| [2 C : the next ending after a space
+                passes = max(passes, 2, start_passes)
+                continue
+            if bl.repeat_end and endings and seen_end and not bl.repeat_start:
+                # :| after the last ending: the section ends after the
+                # first bar of that ending and the :| closes a new one
+                problems.append((i, 'repeat sign after the last ending'))
+                end = after_last_ending if after_last_ending is not None else i
+                break
+            if bl.repeat_end:
+                seen_end = True
+                n = _colons(bl._text)[1] + 1
+                if n > 2 and start_passes > 2 and n != start_passes:
+                    problems.append((i, 'repeat signs disagree on the number of passes'))
+                passes = max(passes, n, start_passes)
+            end = i
+            break
+        if bl.endings is not None:
+            if bl.repeat_end:
+                if not endings:
+                    problems.append((i, 'ending on a repeat sign'))
+                seen_end = True
+                passes = max(passes, 2, start_passes)
+            endings.append((i, bl.endings))
+            after_last_ending = None
+            continue
+        if bl.double and (endings or not explicit):
+            # an ending ends at a double bar (4.10); with no |: a repeat
+            # restarts from the latest double bar (4.8)
+            end = i
+            break
+        if endings and after_last_ending is None:
+            after_last_ending = i
+    if explicit and not seen_end:
+        problems.append((start, 'repeat start with no repeat end'))
+    if endings:
+        numbers = [n for i, e in endings for n in e]
+        passes = max(passes, max(numbers))
+        if len(numbers) != len(set(numbers)):
+            problems.append((endings[0][0], 'ending number used twice'))
+        elif set(numbers) != set(range(1, passes + 1)):
+            problems.append((endings[0][0], 'endings %s do not cover passes 1-%d'
+                             % (','.join(map(str, sorted(numbers))), passes)))
+        if [min(e) for i, e in endings] != sorted(min(e) for i, e in endings):
+            problems.append((endings[0][0], 'endings out of order'))
+        if not seen_end:
+            problems.append((endings[0][0], 'endings with no repeat sign'))
+    return end, passes, problems
+
+
+def _starts_ending(bars, i):
+    return i < len(bars) and isinstance(bars[i][0], BarLine) and bars[i][0].endings is not None
+
+
+def _is_empty(bar):
+    return not any(isinstance(token, (Note, Rest)) for token in bar)
+
+
+_jump_decoration = re.compile(r'^[!+](d\.?[cs]\.?(al(coda|fine))?|dacapo|dalsegno|dacoda|segno|coda|fine)[!+]$', re.I)
+
+
+def check_repeats(bars):
+    """Problems that make the playback order of the bars ambiguous or
+    unsupported, as a list of (bar index, message): a |: that is never
+    closed, ending numbers that are missing, repeated or out of order,
+    endings with no repeat sign or at the start of a section, a :| after
+    the last ending, repeat signs that disagree on the number of passes,
+    a bar line made only of colons, and D.C./D.S./coda/fine marks.
+    """
+    problems = []
+    start = 0
+    while start < len(bars):
+        end, passes, probs = _section(bars, start)
+        problems.extend(probs)
+        start = end
+    for n, bar in enumerate(bars):
+        bl = bar[0]
+        if isinstance(bl, BarLine) and bl._text.strip(':') == '' and bl._text != '::':
+            problems.append((n, 'bar line %r' % bl._text))
+        for token in bar:
+            if isinstance(token, Decoration) and _jump_decoration.match(token._text):
+                problems.append((n, '%s is not supported' % token._text))
+    return sorted(problems)
+
+
+def expand_repeats(bars, strict=True):
+    """The bars in playback order: each repeated section is written out
+    once per pass, and on each pass only the variant ending whose numbers
+    include that pass is played. The bars themselves are not copied.
+
+    A :| with no |: restarts from the latest of the start of the tune, a
+    double bar and the previous :| (standard 4.8). When the structure is
+    ambiguous (see check_repeats()) a RepeatError is raised; with
+    strict=False the most likely reading is used instead.
+    """
+    if strict:
+        problems = check_repeats(bars)
+        if problems:
+            raise RepeatError('; '.join('%s (bar %d)' % (msg, i + 1) for i, msg in problems))
+    out = []
+    i = start = 0
+    pass_no = 1
+    skipped = False   # the previous bar was skipped (an ending not for this pass)
+    section_end, n_pass = _section(bars, 0)[:2] if bars else (0, 1)
+    while True:
+        if i == section_end:
+            if pass_no < n_pass:
+                i, pass_no, skipped = start, pass_no + 1, False
+                continue
+            if i == len(bars):
+                break
+            start, pass_no = i, 1
+            section_end, n_pass = _section(bars, i)[:2]
+        bl = bars[i][0]
+        if isinstance(bl, BarLine):
+            # a :| ends the pass, unless we got here by skipping the ending
+            # it closes (:|[2 on a pass that does not play ending 1)
+            if bl.repeat_end and i != start and pass_no < n_pass and not skipped:
+                i, pass_no, skipped = start, pass_no + 1, False
+                continue
+            if bl.endings is not None and pass_no not in bl.endings:
+                # not this pass: skip to the next ending or the end of the section
+                i += 1
+                while i < section_end and not (isinstance(bars[i][0], BarLine) and bars[i][0].endings is not None):
+                    i += 1
+                skipped = True
+                continue
+        out.append(bars[i])
+        skipped = False
+        i += 1
+    return out
+
+
+# A problem found by Tune.validate(): 1-based line and column in the ABC
+# text (None when it does not refer to a place) and a message.
+Issue = namedtuple('Issue', 'line char message')
+
+
+def split_tunes(text):
+    """Split the text of an ABC file into one string per tune (each
+    starting at its X: field). Information fields and %% directives in the
+    file header are prepended to every tune, as the standard says they
+    apply to all of them.
+    """
+    lines = text.split('\n')
+    starts = [i for i, line in enumerate(lines) if line.startswith('X:')]
+    if not starts:
+        return []
+    header = [l for l in lines[:starts[0]]
+              if (len(l) > 1 and l[0] in info_keys and l[1] == ':') or l.startswith('%%')]
+    tunes = []
+    for n, s in enumerate(starts):
+        e = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        tunes.append('\n'.join(header + lines[s:e]))
+    return tunes
+
+
+def validate(abc):
+    """Problems in one tune's ABC text, as a list of Issue. The tune is
+    read with strict=False; if its header cannot be read at all, the one
+    Issue says why.
+    """
+    try:
+        tune = Tune(abc=abc, strict=False)
+    except Exception as e:
+        return [Issue(None, None, 'cannot parse: %s' % e)]
+    return tune.validate()
+
+
 def strip_comment(line):
     """Remove a % comment (and anything after it) from a line. A percent
     escaped as \\% is not a comment.
@@ -714,7 +963,10 @@ class Tune(object):
     """Initialize with either an ABC string or a json-parsed dict read from
     the TheSession API.
     """
-    def __init__(self, abc=None, json=None):
+    def __init__(self, abc=None, json=None, strict=True):
+        # strict: raise on anything the tokenizer cannot read. Otherwise the
+        # offending character becomes an Unknown token (see validate()).
+        self.strict = strict
         if abc is not None:
             self.parse_abc(abc)
         elif json is not None:
@@ -746,12 +998,188 @@ class Tune(object):
             bars[-1].append(token)
         return [bar for bar in bars if bar]
 
+    @property
+    def parts(self):
+        """[(part name, bars)] in source order, split where a P: field
+        appears in the body. Bars before the first P: have the name ''.
+        """
+        parts = [('', [])]
+        pending = None
+        for bar in self.bars:
+            if pending is not None:
+                parts.append((pending, []))
+                pending = None
+            for n, token in enumerate(bar):
+                if isinstance(token, (BodyField, InlineField)) and token._text.strip('[]')[:2] == 'P:':
+                    name = token._text.strip('[]')[2:].strip()
+                    if n == 0:
+                        parts.append((name, []))     # P: before any music: starts here
+                    else:
+                        pending = name              # after a bar line: starts at the next bar
+            parts[-1][1].append(bar)
+        return [p for p in parts if p[1]]
+
+    def validate(self):
+        """Problems with this tune, as a list of Issue (line, char, message).
+        Checks: required fields, header lines that are not fields,
+        characters the tokenizer could not read (strict=False), unbalanced
+        chord brackets, grace braces and slurs, ties between different
+        notes, endings without a repeat, P: parts that do not match the
+        body, and bars whose length does not match the meter.
+        """
+        issues = []
+
+        def at(token, message):
+            line = self.body_lines[token._line] if token._line < len(self.body_lines) else token._line
+            issues.append(Issue(line + 1, token._char + 1, message))
+
+        for name, letter in [('reference number', 'X'), ('tune title', 'T'), ('key', 'K')]:
+            if name not in self.header:
+                issues.append(Issue(None, None, 'missing %s field (%s:)' % (name, letter)))
+        for n, text in self.unknown_lines:
+            issues.append(Issue(n + 1, None, 'not an information field: %r' % text))
+
+        opened = {}     # per line: open [ and { counts
+        slurs = [0, 0]
+        line = None
+        for token in self.tokens:
+            if token._line != line:
+                for text, count in opened.items():
+                    if count > 0:
+                        issues.append(Issue(self.body_lines[line] + 1, None, 'unclosed %s' % text))
+                opened, line = {'[': 0, '{': 0}, token._line
+            if isinstance(token, Unknown):
+                at(token, 'unexpected character %r' % token._text)
+            elif isinstance(token, ChordBracket):
+                if token._text == '[':
+                    opened['['] += 1
+                elif opened['['] == 0:
+                    at(token, 'closing bracket without a chord')
+                else:
+                    opened['['] -= 1
+            elif isinstance(token, GracenoteBrace):
+                if token._text != '}':
+                    opened['{'] += 1
+                elif opened['{'] == 0:
+                    at(token, 'closing brace without grace notes')
+                else:
+                    opened['{'] -= 1
+            elif isinstance(token, Slur):
+                slurs[token._text == ')'] += 1
+        for text, count in opened.items():
+            if count > 0 and line is not None:
+                issues.append(Issue(self.body_lines[line] + 1, None, 'unclosed %s' % text))
+        if slurs[0] != slurs[1]:
+            issues.append(Issue(None, None, 'unbalanced slurs: %d opened, %d closed' % tuple(slurs)))
+
+        notes = self.notes
+        for n, note in enumerate(notes[:-1]):
+            if note.tie and (note.note, note.octave) != (notes[n + 1].note, notes[n + 1].octave):
+                at(note, 'tie from %s to a different note %s (a slur was probably meant)'
+                   % (note._text, notes[n + 1]._text))
+
+        bars = self.bars
+        for n, message in check_repeats(bars):
+            at(bars[n][0], message)
+
+        order = set(parse_parts(self.header.get('parts', '')))
+        found = set(name for name, bars in self.parts if name)
+        for name in sorted(order - found):
+            issues.append(Issue(None, None, 'part %s in the P: field is not in the tune' % name))
+        for name in sorted(found - order):
+            if order:
+                issues.append(Issue(None, None, 'part %s in the tune is not in the P: field' % name))
+
+        if any(name == 'voice' for name, value in self.fields) or \
+                any(t._text.strip('[]')[:2] == 'V:' for t in self.tokens if isinstance(t, (BodyField, InlineField))):
+            issues.append(Issue(None, None, 'multi-voice tune: bar lengths not checked'))
+        else:
+            issues.extend(self._bar_length_issues())
+        return issues
+
+    def _bar_length_issues(self):
+        """Bars whose length differs from the meter, ignoring the first and
+        last bar (pickups) and bars with no notes."""
+        issues = []
+        bars = self.bars
+        with_notes = [n for n, bar in enumerate(bars) if not _is_empty(bar)]
+        for n, bar in enumerate(bars):
+            if n == 0 or n == with_notes[-1] or not isinstance(bar[0], BarLine):
+                continue
+            length = Fraction(0)
+            meter = first = None
+            in_chord = False
+            for token in bar:
+                if isinstance(token, ChordBracket):
+                    in_chord = token._text == '['
+                    chord_counted = False
+                elif isinstance(token, Note) and not token.grace:
+                    if in_chord:
+                        if chord_counted:
+                            continue
+                        chord_counted = True
+                    meter = token.time_sig._meter
+                    length += Fraction(*token.length) * Fraction(*token.time_sig._unit_len)
+                elif isinstance(token, Rest):
+                    meter = token.time_sig._meter
+                    if token.symbol in 'XZ' and meter is not None:
+                        length += Fraction(*token.length) * Fraction(*meter)
+                    else:
+                        length += Fraction(*token.length) * Fraction(*token.time_sig._unit_len)
+                else:
+                    continue
+                if first is None:
+                    first = token
+            if length == 0 or meter is None:
+                continue
+            expected = Fraction(*meter)
+            # a short bar next to a repeat, double bar or ending is a pickup
+            # (or the bar that a pickup completes), not an error
+            boundary = lambda bl: bl.repeat_start or bl.repeat_end or bl.double or bl.endings is not None
+            closing = bars[n + 1][0] if n + 1 < len(bars) else None
+            if length < expected and (boundary(bar[0]) or (isinstance(closing, BarLine) and boundary(closing))):
+                continue
+            if length != expected:
+                issues.append(Issue(self.body_lines[first._line] + 1, first._char + 1,
+                                    'bar %d has length %s, expected %s' % (n + 1, length, expected)))
+        return issues
+
+    def expand_repeats(self, strict=True):
+        """Bars in playback order (see expand_repeats()), following the part
+        order of a P: header field when there is one. Unless strict=False,
+        a RepeatError is raised for an ambiguous repeat structure, a P:
+        field that does not match the body, or a multi-voice tune.
+        """
+        order = parse_parts(self.header.get('parts', ''))
+        parts = self.parts
+        names = [name for name, bars in parts if name]
+        if strict:
+            if any(name == 'voice' for name, value in self.fields) or any(
+                    t._text.strip('[]')[:2] == 'V:' for t in self.tokens if isinstance(t, (BodyField, InlineField))):
+                raise RepeatError('multi-voice tune')
+            if order and not names:
+                raise RepeatError('P: field in the header but no P: in the body')
+            for name in sorted((set(order) ^ set(names)) if order else []):
+                raise RepeatError('part %s is %s' % (name, 'not in the tune' if name in order
+                                                           else 'not in the P: field'))
+        if not order or not names:
+            return expand_repeats(self.bars, strict)
+        expanded = {}
+        for name, bars in parts:
+            expanded.setdefault(name, []).extend(expand_repeats(bars, strict))
+        out = list(expanded.get('', []))     # anything before the first P: plays once
+        for name in order:
+            out.extend(expanded.get(name, []))
+        return out
+
     def parse_abc(self, abc):
         self.abc = abc
         header = []
         tune = []
+        self.unknown_lines = []   # (line number, text) of header lines that are not fields
+        self.body_lines = []
         in_tune = False
-        for line in abc.split('\n'):
+        for n, line in enumerate(abc.split('\n')):
             # a %%directive is equivalent to an I: field (standard 11.0)
             if line.startswith('%%'):
                 line = 'I:' + line[2:]
@@ -761,6 +1189,7 @@ class Tune(object):
                 continue
             if in_tune:
                 tune.append(line)
+                self.body_lines.append(n)   # original line number of each body line
             else:
                 if len(line) > 1 and line[0] in info_keys and line[1] == ':':
                     header.append(line)
@@ -768,6 +1197,8 @@ class Tune(object):
                         in_tune = True
                 elif line[:2] == '+:' and header:
                     header[-1] += ' ' + line[2:]
+                else:
+                    self.unknown_lines.append((n, line))
 
         self.parse_header(header)
         self.parse_tune(tune)
@@ -778,11 +1209,14 @@ class Tune(object):
             "setting": int(json['setting_id']),
             "tune title": json['name'],
             "meter": json['meter'],
-            "unit note length": "1/" + json['meter'].split('/')[1],
+            "unit note length": "1/8",     # thesession.org writes every tune with L:1/8
             "key": json['mode'],
         }
         self.fields = list(self.header.items())
-        self.parse_tune(json['abc'].split('\r\n'))
+        lines = json['abc'].split('\r\n')
+        self.unknown_lines = []
+        self.body_lines = list(range(len(lines)))
+        self.parse_tune(lines)
 
     def parse_header(self, header):
         # every field in order (a field may repeat, e.g. several T: or I:)
@@ -793,16 +1227,16 @@ class Tune(object):
                 continue    # the first T: is the title; later ones are alternatives
             h[name] = data
         self.header = h
-        self.reference = h['reference number']
-        self.title = h['tune title']
-        self.key = h['key']
+        self.reference = h.get('reference number')
+        self.title = h.get('tune title')
+        self.key = h.get('key', '')
 
     def parse_tune(self, tune):
         self.tokens = self.tokenize(tune, self.header)
 
     def tokenize(self, tune, header):
         # get initial key signature from header
-        key = Key(self.header['key'])
+        key = Key(self.header.get('key', ''))
 
         # get initial time signature from header
         meter = self.header.get('meter', 'free')
@@ -848,6 +1282,7 @@ class Tune(object):
             pending_dots = None
             chord_start = None   # index of the first token inside an open [ chord
             tuplet = None        # [q, p, notes left] while inside a tuplet
+            in_grace = False     # inside {...}
             j = 0
             while j < len(line):
                 part = line[j:]
@@ -901,7 +1336,7 @@ class Tune(object):
 
                     tokens.append(Note(key=key, time=time_sig, note=g['note'], accidental=g['acc'],
                         octave=octave, num=num, denom=denom, bar_accidental=bar_accidental,
-                        line=i, char=j, text=m.group()))
+                        grace=in_grace, line=i, char=j, text=m.group()))
                     prev_note = tokens[-1]
 
                     # (inside a chord the dots and tuplet are applied at the
@@ -1014,6 +1449,7 @@ class Tune(object):
                 m = re.match(r'(\{[/\\]?)|\}', part)
                 if m is not None:
                     tokens.append(GracenoteBrace(line=i, char=j, text=m.group()))
+                    in_grace = m.group() != '}'
                     j += m.end()
                     continue
 
@@ -1072,7 +1508,10 @@ class Tune(object):
                     j += m.end()
                     continue
 
-                raise Exception("Unable to parse: %s\n%s" % (part, self.url))
+                if self.strict:
+                    raise Exception("Unable to parse: %s\n%s" % (part, self.url))
+                tokens.append(Unknown(line=i, char=j, text=part[0]))
+                j += 1
 
             if tokens and not isinstance(tokens[-1], Continuation):
                 tokens.append(Newline(line=i, char=j, text='\n'))
