@@ -1510,7 +1510,7 @@ class Tune(object):
                     continue
 
                 if self.strict:
-                    raise Exception("Unable to parse: %s\n%s" % (part, self.url))
+                    raise Exception("Unable to parse: %r (line %d, char %d)" % (part, i + 1, j + 1))
                 tokens.append(Unknown(line=i, char=j, text=part[0]))
                 j += 1
 
