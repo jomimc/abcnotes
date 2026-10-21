@@ -1,0 +1,49 @@
+% Repeat structures from the ABC standard 2.1 (sections 4.8, 4.9 and 3.1.9),
+% each padded out into a small tune for the abcnotes test suite. The notes
+% are made up; the bar lines are the point.
+
+X:1
+T:First and second ending
+N:the example in standard 2.1 section 4.9
+M:6/8
+L:1/8
+K:D
+faf gfe|[1 dfe dBA:|[2 d2e dcB|]
+
+X:2
+T:Double colon
+N:a :: bar line ends one repeat and starts the next (section 4.8)
+M:2/4
+L:1/8
+K:C
+|: ABcd | efga :: bagf | edcB :|
+
+X:3
+T:Three times
+N:|:: and ::| mark a section that is played three times (section 4.8)
+M:2/4
+L:1/8
+K:C
+|:: ABcd | efga ::|
+
+X:4
+T:Four passes
+N:ending numbers may be lists: [1,3 [2 [4 (section 4.9)
+M:2/4
+L:1/8
+P:A
+K:C
+P:A
+|: ABcd |[1,3 efga :|[2 bagf :|[4 edcB |]
+
+X:5
+T:Parts
+N:P:ABAB in the header gives the order of the P:A and P:B parts in the body (section 3.1.9)
+M:2/4
+L:1/8
+P:ABAB
+K:C
+P:A
+ABcd | efga ||
+P:B
+bagf | edcB |]

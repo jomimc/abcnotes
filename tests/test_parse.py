@@ -4,7 +4,7 @@ Tests for parsing whole tunes from ABC text
 
 import pytest
 
-import pyabc
+import abcnotes
 
 
 def tune(body, **fields):
@@ -13,7 +13,7 @@ def tune(body, **fields):
     """
     fields.setdefault('K', 'C')
     header = ''.join('%s:%s\n' % (k, v) for k, v in fields.items())
-    return pyabc.Tune(abc='X:1\nT:test\n' + header + body + '\n')
+    return abcnotes.Tune(abc='X:1\nT:test\n' + header + body + '\n')
 
 
 # --- meter and unit note length -------------------------------------------
@@ -30,12 +30,12 @@ def tune(body, **fields):
     (' 3/4 ', (3, 4)),
 ])
 def test_parse_meter(meter, expected):
-    assert pyabc.parse_meter(meter) == expected
+    assert abcnotes.parse_meter(meter) == expected
 
 
 def test_parse_meter_invalid():
     with pytest.raises(ValueError):
-        pyabc.parse_meter('abc')
+        abcnotes.parse_meter('abc')
 
 
 @pytest.mark.parametrize('fields, unit', [
@@ -68,7 +68,7 @@ def test_free_meter_repr():
     ('A\\%B%c', 'A\\%B'),          # escaped percent is not a comment
 ])
 def test_strip_comment(line, expected):
-    assert pyabc.strip_comment(line) == expected
+    assert abcnotes.strip_comment(line) == expected
 
 
 def test_comment_in_header_keeps_preceding_char():
@@ -79,7 +79,7 @@ def test_comment_in_header_keeps_preceding_char():
 def test_comment_in_body():
     t = tune('AB%comment\nC|%comment\nD')
     assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
-    assert any(isinstance(tok, pyabc.Beam) for tok in t.tokens)
+    assert any(isinstance(tok, abcnotes.Beam) for tok in t.tokens)
 
 
 # --- field lines -------------------------------------------------------------
@@ -88,24 +88,24 @@ def test_empty_body_field_line():
     # W: lyrics after the body, including an empty W: line
     t = tune('AB|\nW:some words\nW:\nw:\nCD|')
     assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
-    fields = [tok._text for tok in t.tokens if isinstance(tok, pyabc.BodyField)]
+    fields = [tok._text for tok in t.tokens if isinstance(tok, abcnotes.BodyField)]
     assert fields == ['W:some words', 'W:', 'w:']
 
 
 def test_one_char_header_line_is_ignored():
-    t = pyabc.Tune(abc='X:1\nT:test\nZ\nK:C\nAB\n')
+    t = abcnotes.Tune(abc='X:1\nT:test\nZ\nK:C\nAB\n')
     assert [n.note for n in t.notes] == ['A', 'B']
 
 
 def test_leading_continuation_line_is_ignored():
-    t = pyabc.Tune(abc='+:stray\nX:1\nT:test\nK:C\nAB\n')
+    t = abcnotes.Tune(abc='+:stray\nX:1\nT:test\nK:C\nAB\n')
     assert t.header['tune title'] == 'test'
 
 
 # --- bar lines and endings ---------------------------------------------------
 
 def bars(t):
-    return [tok._text for tok in t.tokens if isinstance(tok, pyabc.Beam)]
+    return [tok._text for tok in t.tokens if isinstance(tok, abcnotes.Beam)]
 
 
 @pytest.mark.parametrize('body, expected', [
@@ -123,7 +123,7 @@ def test_chord_after_bar_is_not_an_ending():
     t = tune('|[CEG] A')
     assert [n.note for n in t.notes] == ['C', 'E', 'G', 'A']
     assert bars(t) == ['|']
-    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.ChordBracket)] == ['[', ']']
+    assert [tok._text for tok in t.tokens if isinstance(tok, abcnotes.ChordBracket)] == ['[', ']']
 
 
 @pytest.mark.parametrize('text, start, end, endings, double', [
@@ -145,20 +145,20 @@ def test_chord_after_bar_is_not_an_ending():
     (':|2,4', False, True, [2, 4], False),
 ])
 def test_barline_attributes(text, start, end, endings, double):
-    b = [tok for tok in tune('A %s B' % text).tokens if isinstance(tok, pyabc.BarLine)]
+    b = [tok for tok in tune('A %s B' % text).tokens if isinstance(tok, abcnotes.BarLine)]
     assert len(b) == 1
     assert (b[0]._text, b[0].repeat_start, b[0].repeat_end, b[0].endings, b[0].double) == \
         (text, start, end, endings, double)
 
 
 def test_beam_is_an_alias_for_barline():
-    assert pyabc.Beam is pyabc.BarLine
-    assert all(isinstance(tok, pyabc.Beam) for tok in tune('A|B').tokens if isinstance(tok, pyabc.BarLine))
+    assert abcnotes.Beam is abcnotes.BarLine
+    assert all(isinstance(tok, abcnotes.Beam) for tok in tune('A|B').tokens if isinstance(tok, abcnotes.BarLine))
 
 
 def test_bars_grouping():
     t = tune('A B|:C D|E F:|G|]')
-    groups = [[tok._text for tok in bar if not isinstance(tok, (pyabc.Space, pyabc.Newline))]
+    groups = [[tok._text for tok in bar if not isinstance(tok, (abcnotes.Space, abcnotes.Newline))]
               for bar in t.bars]
     assert groups == [['A', 'B'], ['|:', 'C', 'D'], ['|', 'E', 'F'], [':|', 'G'], ['|]']]
 
@@ -181,7 +181,7 @@ def test_chord_lengths(body, expected):
 
 def test_chord_tokens():
     t = tune('[CE]2|')
-    close = [tok for tok in t.tokens if isinstance(tok, pyabc.ChordBracket)][1]
+    close = [tok for tok in t.tokens if isinstance(tok, abcnotes.ChordBracket)][1]
     assert close._text == ']2'
     assert [n.note for n in close.notes] == ['C', 'E']
     assert bars(t) == ['|']
@@ -225,7 +225,7 @@ def test_tuplets(body, fields, expected):
 
 
 def test_tuplet_token_fields():
-    t = [tok for tok in tune('(3:2:4ABCD').tokens if isinstance(tok, pyabc.Tuplet)][0]
+    t = [tok for tok in tune('(3:2:4ABCD').tokens if isinstance(tok, abcnotes.Tuplet)][0]
     assert (t.num, t.p, t.q, t.r, t._text) == ('3', 3, 2, 4, '(3:2:4')
     assert bars(tune('(3:2:4ABCD')) == []
 
@@ -238,8 +238,8 @@ def test_strict_raises_on_unknown_character():
 
 
 def test_non_strict_records_unknown_characters():
-    t = pyabc.Tune(abc='X:1\nT:t\nK:C\nA \x01 B}\n', strict=False)
-    unknown = [tok for tok in t.tokens if isinstance(tok, pyabc.Unknown)]
+    t = abcnotes.Tune(abc='X:1\nT:t\nK:C\nA \x01 B}\n', strict=False)
+    unknown = [tok for tok in t.tokens if isinstance(tok, abcnotes.Unknown)]
     assert [(u._text, u._line, u._char) for u in unknown] == [('\x01', 0, 2)]
     assert [n.note for n in t.notes] == ['A', 'B']
 
@@ -251,19 +251,19 @@ def test_grace_note_flag():
 
 
 def test_missing_reference_and_title():
-    t = pyabc.Tune(abc='K:D\nF\n')
+    t = abcnotes.Tune(abc='K:D\nF\n')
     assert (t.reference, t.title) == (None, None)
     assert [n.pitch.abs_value for n in t.notes] == [6]
 
 
 def test_missing_key_field():
     # no K: means no tune body at all; nothing to parse, nothing raised
-    t = pyabc.Tune(abc='X:1\nT:t\nM:4/4\n')
+    t = abcnotes.Tune(abc='X:1\nT:t\nM:4/4\n')
     assert t.notes == []
 
 
 def test_unknown_header_lines_are_recorded():
-    t = pyabc.Tune(abc='X:1\nT:t\nsome free text\nZZ:not a field\nK:C\nA\n')
+    t = abcnotes.Tune(abc='X:1\nT:t\nsome free text\nZZ:not a field\nK:C\nA\n')
     assert t.unknown_lines == [(2, 'some free text'), (3, 'ZZ:not a field')]
 
 
@@ -273,7 +273,7 @@ def played(body, strict=True, **fields):
     """Note letters in playback order, one string per bar with notes."""
     out = []
     for bar in tune(body, **fields).expand_repeats(strict):
-        letters = ''.join(tok.note for tok in bar if isinstance(tok, pyabc.Note))
+        letters = ''.join(tok.note for tok in bar if isinstance(tok, abcnotes.Note))
         if letters:
             out.append(letters)
     return ' '.join(out)
@@ -333,7 +333,7 @@ def test_expand_repeats(body, expected):
     ('A | !fine! B |]', '!fine! is not supported (bar 2)', 'A B'),
 ])
 def test_expand_repeats_ambiguous(body, message, lenient):
-    with pytest.raises(pyabc.RepeatError) as e:
+    with pytest.raises(abcnotes.RepeatError) as e:
         played(body)
     assert str(e.value) == message
     assert played(body, strict=False) == lenient
@@ -341,8 +341,8 @@ def test_expand_repeats_ambiguous(body, message, lenient):
 
 def test_check_repeats():
     t = tune('|: A |1 B :|2 C :|')
-    assert pyabc.check_repeats(t.bars) == [(3, 'repeat sign after the last ending')]
-    assert pyabc.check_repeats(tune('|: A :| B :|').bars) == []
+    assert abcnotes.check_repeats(t.bars) == [(3, 'repeat sign after the last ending')]
+    assert abcnotes.check_repeats(tune('|: A :| B :|').bars) == []
 
 
 def test_expand_repeats_keeps_bar_objects():
@@ -360,7 +360,7 @@ def test_expand_repeats_keeps_bar_objects():
     ('', []),
 ])
 def test_parse_parts(spec, expected):
-    assert pyabc.parse_parts(spec) == expected
+    assert abcnotes.parse_parts(spec) == expected
 
 
 def test_parts_property():
@@ -385,21 +385,21 @@ def test_expand_repeats_with_parts(order, expected):
 
 def test_expand_repeats_parts_mismatch():
     body = 'P:A\n|: C :|\nP:B\n|: D :|\n'
-    with pytest.raises(pyabc.RepeatError, match='part A is not in the P: field'):
+    with pytest.raises(abcnotes.RepeatError, match='part A is not in the P: field'):
         played(body, P='B')
     assert played(body, strict=False, P='B') == 'D D'
-    with pytest.raises(pyabc.RepeatError, match='part X is not in the tune'):
+    with pytest.raises(abcnotes.RepeatError, match='part X is not in the tune'):
         played('P:A\n|: C :|\n', P='AX')
     assert played('P:A\n|: C :|\n', strict=False, P='AX') == 'C C'    # unknown part names are skipped
-    with pytest.raises(pyabc.RepeatError, match='P: field in the header but no P: in the body'):
+    with pytest.raises(abcnotes.RepeatError, match='P: field in the header but no P: in the body'):
         played('|: C :| D', P='AB')
     assert played('|: C :| D', strict=False, P='AB') == 'C C D'
 
 
 def test_expand_repeats_multi_voice():
-    with pytest.raises(pyabc.RepeatError, match='multi-voice'):
+    with pytest.raises(abcnotes.RepeatError, match='multi-voice'):
         played('|: C :|', V='1')
-    with pytest.raises(pyabc.RepeatError, match='multi-voice'):
+    with pytest.raises(abcnotes.RepeatError, match='multi-voice'):
         played('[V:1] |: C :|')
     assert played('[V:1] |: C :|', strict=False) == 'C C'
 
@@ -409,7 +409,7 @@ def test_expand_repeats_multi_voice():
 def issues(body, **fields):
     fields.setdefault('K', 'C')
     header = ''.join('%s:%s\n' % (k, v) for k, v in fields.items())
-    return pyabc.validate('X:1\nT:test\nM:4/4\nL:1/8\n' + header + body + '\n')
+    return abcnotes.validate('X:1\nT:test\nM:4/4\nL:1/8\n' + header + body + '\n')
 
 
 def messages(body, **fields):
@@ -421,19 +421,19 @@ def test_clean_tune_has_no_issues():
 
 
 def test_missing_fields():
-    assert [i.message for i in pyabc.validate('K:C\nA\n')] == \
+    assert [i.message for i in abcnotes.validate('K:C\nA\n')] == \
         ['missing reference number field (X:)', 'missing tune title field (T:)']
 
 
 def test_unknown_header_line():
     msgs = messages('ABCD EFGA | ABCD EFGA |', Z='ok')
     assert msgs == []
-    assert pyabc.validate('X:1\nT:t\nfree text\nK:C\nA\n')[0] == pyabc.Issue(3, None, "not an information field: 'free text'")
+    assert abcnotes.validate('X:1\nT:t\nfree text\nK:C\nA\n')[0] == abcnotes.Issue(3, None, "not an information field: 'free text'")
 
 
 def test_unexpected_character():
     i = issues('ABCD EFGA | AB\x01CD EFGA |')
-    assert i == [pyabc.Issue(6, 15, "unexpected character '\\x01'")]
+    assert i == [abcnotes.Issue(6, 15, "unexpected character '\\x01'")]
 
 
 def test_unbalanced_brackets_and_braces():
@@ -458,8 +458,8 @@ def test_ending_without_repeat():
 
 
 def test_repeat_problems_point_at_the_bar_line():
-    assert issues('|: ABCD EFGA | ABCD EFGA |') == [pyabc.Issue(6, 1, 'repeat start with no repeat end')]
-    assert issues('ABCD EFGA |1 ABCD EFGA :|2 ABCD EFGA :|') == [pyabc.Issue(6, 38, 'repeat sign after the last ending')]
+    assert issues('|: ABCD EFGA | ABCD EFGA |') == [abcnotes.Issue(6, 1, 'repeat start with no repeat end')]
+    assert issues('ABCD EFGA |1 ABCD EFGA :|2 ABCD EFGA :|') == [abcnotes.Issue(6, 38, 'repeat sign after the last ending')]
     assert messages('ABCD EFGA | ABCD !D.C.! EFGA |]') == ['!D.C.! is not supported']
 
 
@@ -494,23 +494,23 @@ def test_multi_voice_skips_bar_check():
 
 
 def test_validate_unparseable_header():
-    assert pyabc.validate('X:1\nT:t\nM:abc\nK:C\nA\n') == [pyabc.Issue(None, None, 'cannot parse: Invalid meter "abc"')]
+    assert abcnotes.validate('X:1\nT:t\nM:abc\nK:C\nA\n') == [abcnotes.Issue(None, None, 'cannot parse: Invalid meter "abc"')]
 
 
 def test_split_tunes():
     text = 'L:1/8\n%%score 1\nfree text\n\nX:1\nT:a\nK:C\nA|\n\nX:2\nT:b\nK:D\nF|\n'
-    tunes = pyabc.split_tunes(text)
+    tunes = abcnotes.split_tunes(text)
     assert len(tunes) == 2
     assert tunes[0].startswith('L:1/8\n%%score 1\nX:1\n')
     assert tunes[1] == 'L:1/8\n%%score 1\nX:2\nT:b\nK:D\nF|\n'
-    assert pyabc.split_tunes('no tunes here') == []
+    assert abcnotes.split_tunes('no tunes here') == []
 
 
 def test_issue_line_numbers_from_json():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Cmajor', 'abc': 'ABCD EFGA|\r\nABCD EFG|ABCD EFGA|'}
-    t = pyabc.Tune(json=rec)
-    assert t.validate() == [pyabc.Issue(2, 1, 'bar 2 has length 7/8, expected 1')]
+    t = abcnotes.Tune(json=rec)
+    assert t.validate() == [abcnotes.Issue(2, 1, 'bar 2 has length 7/8, expected 1')]
 
 
 def test_bars_no_pickup():
@@ -525,7 +525,7 @@ def test_bars_no_pickup():
 ])
 def test_chord_symbol_liberal(text):
     t = tune('%sA B' % text)
-    syms = [tok for tok in t.tokens if isinstance(tok, pyabc.ChordSymbol)]
+    syms = [tok for tok in t.tokens if isinstance(tok, abcnotes.ChordSymbol)]
     assert [s._text for s in syms] == [text]
     assert [n.note for n in t.notes] == ['A', 'B']
 
@@ -533,8 +533,8 @@ def test_chord_symbol_liberal(text):
 @pytest.mark.parametrize('text', ['"^above"', '"_below"', '"<left"', '">right"', '"@free"'])
 def test_annotation_placement(text):
     t = tune('%sA' % text)
-    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.Annotation)] == [text]
-    assert not any(isinstance(tok, pyabc.ChordSymbol) for tok in t.tokens)
+    assert [tok._text for tok in t.tokens if isinstance(tok, abcnotes.Annotation)] == [text]
+    assert not any(isinstance(tok, abcnotes.ChordSymbol) for tok in t.tokens)
 
 
 def test_unterminated_quote_still_fails():
@@ -558,7 +558,7 @@ def test_unterminated_quote_still_fails():
     ('clef=bass middle=d', 'C', 'major', {}),
 ])
 def test_key_specifiers(key, root, mode, accidentals):
-    k = pyabc.Key(key)
+    k = abcnotes.Key(key)
     assert (k.root.name, k.mode) == (root, mode)
     assert k.accidentals == accidentals
 
@@ -575,7 +575,7 @@ def test_key_specifiers(key, root, mode, accidentals):
     ('Dmix ^g', {'F': '#', 'G': '#'}),
 ])
 def test_key_explicit_accidentals(key, accidentals):
-    assert pyabc.Key(key).accidentals == accidentals
+    assert abcnotes.Key(key).accidentals == accidentals
 
 
 @pytest.mark.parametrize('body, expected', [
@@ -617,7 +617,7 @@ def test_body_tempo_field():
     ('Z', dict(M='none', L='1/8'), [1 / 8]),           # no meter: fall back to L:
 ])
 def test_abs_duration(body, fields, expected):
-    toks = [tok for tok in tune(body, **fields).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
+    toks = [tok for tok in tune(body, **fields).tokens if isinstance(tok, (abcnotes.Note, abcnotes.Rest))]
     assert [tok.abs_duration for tok in toks] == pytest.approx(expected)
 
 
@@ -633,7 +633,7 @@ def test_key_field_with_comment():
 # --- note and rest lengths, broken rhythm ------------------------------------
 
 def durations(body, **fields):
-    return [tok.duration for tok in tune(body, **fields).tokens if isinstance(tok, (pyabc.Note, pyabc.Rest))]
+    return [tok.duration for tok in tune(body, **fields).tokens if isinstance(tok, (abcnotes.Note, abcnotes.Rest))]
 
 
 @pytest.mark.parametrize('body, expected', [
@@ -664,7 +664,7 @@ def test_broken_rhythm(body, expected):
 
 
 def test_rest_symbol_and_length():
-    r = [tok for tok in tune('Z2 z/').tokens if isinstance(tok, pyabc.Rest)]
+    r = [tok for tok in tune('Z2 z/').tokens if isinstance(tok, abcnotes.Rest)]
     assert [(x.symbol, x.length) for x in r] == [('Z', (2, 1)), ('z', (1, 2))]
 
 
@@ -672,7 +672,7 @@ def test_rest_symbol_and_length():
 
 def kinds(body):
     return [type(tok).__name__ for tok in tune(body).tokens
-            if not isinstance(tok, (pyabc.Space, pyabc.Newline))]
+            if not isinstance(tok, (abcnotes.Space, abcnotes.Newline))]
 
 
 @pytest.mark.parametrize('body, expected', [
@@ -690,7 +690,7 @@ def test_decorations_and_ignored(body, expected):
 def test_old_style_line_break():
     t = tune('AB|!\nCD|!\n')
     assert [n.note for n in t.notes] == ['A', 'B', 'C', 'D']
-    assert [tok._text for tok in t.tokens if isinstance(tok, pyabc.Ignored)] == ['!', '!']
+    assert [tok._text for tok in t.tokens if isinstance(tok, abcnotes.Ignored)] == ['!', '!']
 
 
 def test_rests_and_spacer_are_not_decorations():
@@ -700,7 +700,7 @@ def test_rests_and_spacer_are_not_decorations():
 # --- header fields -----------------------------------------------------------
 
 def test_fields_keep_every_field_in_order():
-    t = pyabc.Tune(abc='X:1\nT:First\nT:Second\nI:linebreak $\n%%propagate-accidentals not\nK:C\nA\n')
+    t = abcnotes.Tune(abc='X:1\nT:First\nT:Second\nI:linebreak $\n%%propagate-accidentals not\nK:C\nA\n')
     assert t.fields == [('reference number', '1'), ('tune title', 'First'),
                         ('tune title', 'Second'), ('instruction', 'linebreak $'),
                         ('instruction', 'propagate-accidentals not'), ('key', 'C')]
@@ -711,7 +711,7 @@ def test_fields_keep_every_field_in_order():
 def test_fields_on_json_path():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'A'}
-    assert ('key', 'Dmajor') in pyabc.Tune(json=rec).fields
+    assert ('key', 'Dmajor') in abcnotes.Tune(json=rec).fields
 
 
 @pytest.mark.parametrize('q, expected', [
@@ -724,7 +724,7 @@ def test_fields_on_json_path():
     ('', (None, None, '')),
 ])
 def test_parse_tempo(q, expected):
-    assert pyabc.parse_tempo(q) == expected
+    assert abcnotes.parse_tempo(q) == expected
 
 
 def test_tempo_reaches_time_signature():
@@ -754,7 +754,7 @@ def test_accidental_propagation(body, fields, expected):
 
 
 def test_propagate_directive_as_stylesheet_line():
-    t = pyabc.Tune(abc='X:1\nT:t\n%%propagate-accidentals not\nK:C\n^F F\n')
+    t = abcnotes.Tune(abc='X:1\nT:t\n%%propagate-accidentals not\nK:C\n^F F\n')
     assert [n.pitch.abs_value for n in t.notes] == [6, 5]
 
 
@@ -776,5 +776,5 @@ def test_tie_flag():
 def test_comment_in_json_body():
     rec = {'tune_id': '1', 'setting_id': '2', 'name': 't', 'meter': '4/4',
            'mode': 'Dmajor', 'abc': 'AB%comment\r\nC'}
-    t = pyabc.Tune(json=rec)
+    t = abcnotes.Tune(json=rec)
     assert [n.note for n in t.notes] == ['A', 'B', 'C']

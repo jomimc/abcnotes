@@ -5,7 +5,7 @@ Tests for the key signature class
 import pytest
 import itertools
 
-from pyabc import Key
+from abcnotes import Key
 
 
 def every_possible_key():

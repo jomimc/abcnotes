@@ -3,6 +3,7 @@ import re, sys
 from fractions import Fraction
 from collections import namedtuple
 
+__version__ = '0.1.0'
 
 str_type = str if sys.version > '3' else basestring
 

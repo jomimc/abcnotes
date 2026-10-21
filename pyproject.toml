@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abcnotes"
+dynamic = ["version"]
+description = "Parse, validate and expand tunes in ABC music notation"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE.txt"]
+requires-python = ">=3.9"
+authors = [
+    {name = "Luke Campagnola"},
+    {name = "John McBride", email = "jmmcbride@protonmail.com"},
+]
+maintainers = [
+    {name = "John McBride", email = "jmmcbride@protonmail.com"},
+]
+keywords = ["abc", "music", "notation", "folk", "parser"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Text Processing :: Markup",
+]
+
+[project.urls]
+Homepage = "https://github.com/jomimc/abcnotes"
+Issues = "https://github.com/jomimc/abcnotes/issues"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools]
+py-modules = ["abcnotes"]
+
+[tool.setuptools.dynamic]
+version = {attr = "abcnotes.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
