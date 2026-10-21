@@ -736,36 +736,101 @@ def parse_parts(spec):
     return parse(0)[0]
 
 
-def _section_info(bars, start):
-    """For the repeated section beginning at bars[start], return
-    (number of passes, index of the first bar after the section).
+class RepeatError(ValueError):
+    """The repeat structure of a tune is ambiguous or unsupported, so its
+    playback order cannot be determined (see check_repeats())."""
+
+
+def _colons(text):
+    """(repeats started, repeats ended) by a bar line's colons:
+    |: (1, 0)   :| (0, 1)   :: (1, 1)   |:: (2, 0)   ::| (0, 2)
     """
-    explicit = isinstance(bars[start][0], BarLine) and bars[start][0].repeat_start
+    if text.strip(':') == '':         # ::
+        return 1, 1
+    lead = len(text) - len(text.lstrip(':'))
+    trail = len(text) - len(text.rstrip(':'))
+    return trail, lead
+
+
+def _section(bars, start):
+    """For the repeated section beginning at bars[start], return (index of
+    the first bar after the section, number of passes, problems) where
+    problems is a list of (bar index, message) for anything that makes
+    the section's meaning ambiguous. A section ends at the next |:, at a
+    bare :|, at the end of its last ending, or (if it has no |: of its
+    own) at a double bar.
+    """
+    problems = []
+    bl0 = bars[start][0] if isinstance(bars[start][0], BarLine) else None
+    explicit = bl0 is not None and bl0.repeat_start
+    start_passes = _colons(bl0._text)[0] + 1 if explicit else 0   # |:: repeats 3 times (4.8)
     passes = 1
-    seen_end = seen_ending = False
+    seen_end = has_notes = False
+    endings = []                   # (bar index, ending numbers) in order
+    after_last_ending = None       # first plain bar line after the last ending began
+    end = len(bars)
     for i in range(start, len(bars)):
         bl = bars[i][0]
         if not isinstance(bl, BarLine):
+            has_notes = has_notes or not _is_empty(bars[i])
             continue
-        if bl.endings is not None:
-            passes = max(passes, max(bl.endings))
-            seen_ending = True
+        if bl.endings is not None and not has_notes:
+            problems.append((i, 'ending at the start of a section'))
+        has_notes = has_notes or not _is_empty(bars[i])
         if i == start:
+            if bl.endings is not None:
+                endings.append((i, bl.endings))
             continue
-        if bl.repeat_end:
-            seen_end = True
-            passes = max(passes, 2)
-            # the section ends here, unless this :| closes one ending and
-            # the next one follows after a space  (|1 B :| [2 C)
-            if bl.endings is None and not (seen_ending and _is_empty(bars[i])
-                                           and _starts_ending(bars, i + 1)):
-                return passes, i
-        elif bl.repeat_start or (seen_end and bl.endings is None):
-            return passes, i
-        elif bl.double and bl.endings is None and not explicit:
-            # with no |: a repeat restarts from the latest double bar (4.8)
-            return passes, i
-    return passes, len(bars)
+        if bl.repeat_start or (bl.repeat_end and bl.endings is None):
+            if bl.repeat_end and endings and _is_empty(bars[i]) and _starts_ending(bars, i + 1):
+                seen_end = True    # |1 B :| [2 C : the next ending after a space
+                passes = max(passes, 2, start_passes)
+                continue
+            if bl.repeat_end and endings and seen_end and not bl.repeat_start:
+                # :| after the last ending: the section ends after the
+                # first bar of that ending and the :| closes a new one
+                problems.append((i, 'repeat sign after the last ending'))
+                end = after_last_ending if after_last_ending is not None else i
+                break
+            if bl.repeat_end:
+                seen_end = True
+                n = _colons(bl._text)[1] + 1
+                if n > 2 and start_passes > 2 and n != start_passes:
+                    problems.append((i, 'repeat signs disagree on the number of passes'))
+                passes = max(passes, n, start_passes)
+            end = i
+            break
+        if bl.endings is not None:
+            if bl.repeat_end:
+                if not endings:
+                    problems.append((i, 'ending on a repeat sign'))
+                seen_end = True
+                passes = max(passes, 2, start_passes)
+            endings.append((i, bl.endings))
+            after_last_ending = None
+            continue
+        if bl.double and (endings or not explicit):
+            # an ending ends at a double bar (4.10); with no |: a repeat
+            # restarts from the latest double bar (4.8)
+            end = i
+            break
+        if endings and after_last_ending is None:
+            after_last_ending = i
+    if explicit and not seen_end:
+        problems.append((start, 'repeat start with no repeat end'))
+    if endings:
+        numbers = [n for i, e in endings for n in e]
+        passes = max(passes, max(numbers))
+        if len(numbers) != len(set(numbers)):
+            problems.append((endings[0][0], 'ending number used twice'))
+        elif set(numbers) != set(range(1, passes + 1)):
+            problems.append((endings[0][0], 'endings %s do not cover passes 1-%d'
+                             % (','.join(map(str, sorted(numbers))), passes)))
+        if [min(e) for i, e in endings] != sorted(min(e) for i, e in endings):
+            problems.append((endings[0][0], 'endings out of order'))
+        if not seen_end:
+            problems.append((endings[0][0], 'endings with no repeat sign'))
+    return end, passes, problems
 
 
 def _starts_ending(bars, i):
@@ -776,16 +841,52 @@ def _is_empty(bar):
     return not any(isinstance(token, (Note, Rest)) for token in bar)
 
 
-def expand_repeats(bars):
+_jump_decoration = re.compile(r'^[!+](d\.?[cs]\.?(al(coda|fine))?|dacapo|dalsegno|dacoda|segno|coda|fine)[!+]$', re.I)
+
+
+def check_repeats(bars):
+    """Problems that make the playback order of the bars ambiguous or
+    unsupported, as a list of (bar index, message): a |: that is never
+    closed, ending numbers that are missing, repeated or out of order,
+    endings with no repeat sign or at the start of a section, a :| after
+    the last ending, repeat signs that disagree on the number of passes,
+    a bar line made only of colons, and D.C./D.S./coda/fine marks.
+    """
+    problems = []
+    start = 0
+    while start < len(bars):
+        end, passes, probs = _section(bars, start)
+        problems.extend(probs)
+        start = end
+    for n, bar in enumerate(bars):
+        bl = bar[0]
+        if isinstance(bl, BarLine) and bl._text.strip(':') == '' and bl._text != '::':
+            problems.append((n, 'bar line %r' % bl._text))
+        for token in bar:
+            if isinstance(token, Decoration) and _jump_decoration.match(token._text):
+                problems.append((n, '%s is not supported' % token._text))
+    return sorted(problems)
+
+
+def expand_repeats(bars, strict=True):
     """The bars in playback order: each repeated section is written out
     once per pass, and on each pass only the variant ending whose numbers
     include that pass is played. The bars themselves are not copied.
+
+    A :| with no |: restarts from the latest of the start of the tune, a
+    double bar and the previous :| (standard 4.8). When the structure is
+    ambiguous (see check_repeats()) a RepeatError is raised; with
+    strict=False the most likely reading is used instead.
     """
+    if strict:
+        problems = check_repeats(bars)
+        if problems:
+            raise RepeatError('; '.join('%s (bar %d)' % (msg, i + 1) for i, msg in problems))
     out = []
     i = start = 0
     pass_no = 1
     skipped = False   # the previous bar was skipped (an ending not for this pass)
-    n_pass, section_end = _section_info(bars, 0) if bars else (1, 0)
+    section_end, n_pass = _section(bars, 0)[:2] if bars else (0, 1)
     while True:
         if i == section_end:
             if pass_no < n_pass:
@@ -794,7 +895,7 @@ def expand_repeats(bars):
             if i == len(bars):
                 break
             start, pass_no = i, 1
-            n_pass, section_end = _section_info(bars, i)
+            section_end, n_pass = _section(bars, i)[:2]
         bl = bars[i][0]
         if isinstance(bl, BarLine):
             # a :| ends the pass, unless we got here by skipping the ending
@@ -977,9 +1078,9 @@ class Tune(object):
                 at(note, 'tie from %s to a different note %s (a slur was probably meant)'
                    % (note._text, notes[n + 1]._text))
 
-        bar_lines = [t for t in self.tokens if isinstance(t, BarLine)]
-        if any(b.endings for b in bar_lines) and not any(b.repeat_end for b in bar_lines):
-            at([b for b in bar_lines if b.endings][0], 'variant ending in a tune with no repeat')
+        bars = self.bars
+        for n, message in check_repeats(bars):
+            at(bars[n][0], message)
 
         order = set(parse_parts(self.header.get('parts', '')))
         found = set(name for name, bars in self.parts if name)
@@ -1043,17 +1144,29 @@ class Tune(object):
                                     'bar %d has length %s, expected %s' % (n + 1, length, expected)))
         return issues
 
-    def expand_repeats(self):
+    def expand_repeats(self, strict=True):
         """Bars in playback order (see expand_repeats()), following the part
-        order of a P: header field when there is one.
+        order of a P: header field when there is one. Unless strict=False,
+        a RepeatError is raised for an ambiguous repeat structure, a P:
+        field that does not match the body, or a multi-voice tune.
         """
         order = parse_parts(self.header.get('parts', ''))
         parts = self.parts
-        if not order or all(name == '' for name, bars in parts):
-            return expand_repeats(self.bars)
+        names = [name for name, bars in parts if name]
+        if strict:
+            if any(name == 'voice' for name, value in self.fields) or any(
+                    t._text.strip('[]')[:2] == 'V:' for t in self.tokens if isinstance(t, (BodyField, InlineField))):
+                raise RepeatError('multi-voice tune')
+            if order and not names:
+                raise RepeatError('P: field in the header but no P: in the body')
+            for name in sorted((set(order) ^ set(names)) if order else []):
+                raise RepeatError('part %s is %s' % (name, 'not in the tune' if name in order
+                                                           else 'not in the P: field'))
+        if not order or not names:
+            return expand_repeats(self.bars, strict)
         expanded = {}
         for name, bars in parts:
-            expanded.setdefault(name, []).extend(expand_repeats(bars))
+            expanded.setdefault(name, []).extend(expand_repeats(bars, strict))
         out = list(expanded.get('', []))     # anything before the first P: plays once
         for name in order:
             out.extend(expanded.get(name, []))

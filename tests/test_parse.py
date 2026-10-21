@@ -269,10 +269,10 @@ def test_unknown_header_lines_are_recorded():
 
 # --- repeats and parts -------------------------------------------------------
 
-def played(body, **fields):
+def played(body, strict=True, **fields):
     """Note letters in playback order, one string per bar with notes."""
     out = []
-    for bar in tune(body, **fields).expand_repeats():
+    for bar in tune(body, **fields).expand_repeats(strict):
         letters = ''.join(tok.note for tok in bar if isinstance(tok, pyabc.Note))
         if letters:
             out.append(letters)
@@ -297,19 +297,52 @@ def played(body, **fields):
     ('|: A |1 B :|2 C :|3 D |]', 'A B A C A D'),
     ('|: A |1 B C :|2 D |]', 'A BC A D'),               # a longer ending
     ('|: A |1 B | C :|2 D |]', 'A B C A D'),            # a two-bar ending
-    ('|: A |1 B :|2 C | D :|', 'A B A C D D'),          # a repeat after the endings
-    ('|1 A |2 B |]', 'A B'),                            # endings with no :| (malformed)
-    ('A |1 B |2 C', 'A B A C'),                         # ... and no final bar line
-    ('|: A :| [1 B :| [2 C | D', 'A A B C D'),          # a section that is only endings
+    ('|: A |1 B :|2 C | D |]', 'A B A C D'),            # a two-bar last ending
+    ('|: A |1 B :|2 C | D :|3 E |]', 'A B A C D A E'),  # ... followed by another ending
+    ('|: A |1 B :|2 C | D |: E :|', 'A B A C D E E'),
+    ('|: A |1 B :|2 C || D :|', 'A B A C D D'),         # a double bar ends the last ending
     ('|: A |1 B :| [2 C | D', 'A B A C D'),             # [2 after a space
     ('|: A :| B |1 C :| [2 D | E', 'A A B C B D E'),
-    ('|2 A || [2 B ||', 'A B'),                         # ending numbers on the first bar (malformed)
     ('|: A :|: B :|', 'A A B B'),
     ('|: A :|| B |]', 'A A B'),
     ('A |: B :| C', 'A B B C'),
+    ('|:: A ::|', 'A A A'),                             # three times (4.8)
+    ('A ::| B :|', 'A A A B B'),
+    ('|:: A :| B', 'A A A B'),
 ])
 def test_expand_repeats(body, expected):
     assert played(body) == expected
+
+
+@pytest.mark.parametrize('body, message, lenient', [
+    ('|: A | B |]', 'repeat start with no repeat end (bar 1)', 'A B'),
+    ('|: A |: B :|', 'repeat start with no repeat end (bar 1)', 'A B B'),
+    ('|1 A |2 B |]', 'ending at the start of a section (bar 1); endings with no repeat sign (bar 1)', 'A B'),
+    ('A |1 B |2 C', 'endings with no repeat sign (bar 2)', 'A B A C'),
+    ('|: A |1 B :|2 C :|', 'repeat sign after the last ending (bar 4)', 'A B A C'),
+    ('|: A |1 B :|2 C | D :|', 'repeat sign after the last ending (bar 5)', 'A B A C D D'),
+    ('|: A |1 B :|3 C |]', 'endings 1,3 do not cover passes 1-3 (bar 2)', 'A B A A C'),
+    ('|: A |1 B :| C |]', 'endings 1 do not cover passes 1-2 (bar 2)', 'A B A C'),
+    ('|: A |2 B :|1 C |]', 'endings out of order (bar 2)', 'A C A B'),
+    ('|: A |1 B :|2 C :|2 D |]', 'ending number used twice (bar 2)', 'A B A C D'),
+    ('|: A :| [1 B :|[2 C', 'ending at the start of a section (bar 3)', 'A A B C'),
+    ('|: A :|1 B :|2 C |]', 'ending on a repeat sign (bar 2)', 'A A C'),
+    ('|:: A :::| B |]', 'repeat signs disagree on the number of passes (bar 2)', 'A A A A B'),
+    ('|: A : B :|', "bar line ':' (bar 2)", 'A A B B'),
+    ('A | B !D.C.! |]', '!D.C.! is not supported (bar 2)', 'A B'),
+    ('A | !fine! B |]', '!fine! is not supported (bar 2)', 'A B'),
+])
+def test_expand_repeats_ambiguous(body, message, lenient):
+    with pytest.raises(pyabc.RepeatError) as e:
+        played(body)
+    assert str(e.value) == message
+    assert played(body, strict=False) == lenient
+
+
+def test_check_repeats():
+    t = tune('|: A |1 B :|2 C :|')
+    assert pyabc.check_repeats(t.bars) == [(3, 'repeat sign after the last ending')]
+    assert pyabc.check_repeats(tune('|: A :| B :|').bars) == []
 
 
 def test_expand_repeats_keeps_bar_objects():
@@ -345,15 +378,30 @@ def test_parts_pickup_before_first_part():
     ('AB', 'C C D D'),
     ('ABB', 'C C D D D D'),
     ('(AB)2', 'C C D D C C D D'),
-    ('B', 'D D'),
-    ('AX', 'C C'),                     # unknown part names are skipped
 ])
 def test_expand_repeats_with_parts(order, expected):
     assert played('P:A\n|: C :|\nP:B\n|: D :|\n', P=order) == expected
 
 
-def test_parts_in_header_but_not_in_body():
-    assert played('|: C :| D', P='AB') == 'C C D'
+def test_expand_repeats_parts_mismatch():
+    body = 'P:A\n|: C :|\nP:B\n|: D :|\n'
+    with pytest.raises(pyabc.RepeatError, match='part A is not in the P: field'):
+        played(body, P='B')
+    assert played(body, strict=False, P='B') == 'D D'
+    with pytest.raises(pyabc.RepeatError, match='part X is not in the tune'):
+        played('P:A\n|: C :|\n', P='AX')
+    assert played('P:A\n|: C :|\n', strict=False, P='AX') == 'C C'    # unknown part names are skipped
+    with pytest.raises(pyabc.RepeatError, match='P: field in the header but no P: in the body'):
+        played('|: C :| D', P='AB')
+    assert played('|: C :| D', strict=False, P='AB') == 'C C D'
+
+
+def test_expand_repeats_multi_voice():
+    with pytest.raises(pyabc.RepeatError, match='multi-voice'):
+        played('|: C :|', V='1')
+    with pytest.raises(pyabc.RepeatError, match='multi-voice'):
+        played('[V:1] |: C :|')
+    assert played('[V:1] |: C :|', strict=False) == 'C C'
 
 
 # --- validation --------------------------------------------------------------
@@ -406,7 +454,13 @@ def test_tie_to_a_different_note():
 
 
 def test_ending_without_repeat():
-    assert messages('ABCD EFGA |1 ABCD EFGA |2 ABCD EFGA |') == ['variant ending in a tune with no repeat']
+    assert messages('ABCD EFGA |1 ABCD EFGA |2 ABCD EFGA |') == ['endings with no repeat sign']
+
+
+def test_repeat_problems_point_at_the_bar_line():
+    assert issues('|: ABCD EFGA | ABCD EFGA |') == [pyabc.Issue(6, 1, 'repeat start with no repeat end')]
+    assert issues('ABCD EFGA |1 ABCD EFGA :|2 ABCD EFGA :|') == [pyabc.Issue(6, 38, 'repeat sign after the last ending')]
+    assert messages('ABCD EFGA | ABCD !D.C.! EFGA |]') == ['!D.C.! is not supported']
 
 
 def test_parts_mismatch():
@@ -429,7 +483,7 @@ def test_bar_length_pickups_at_section_boundaries():
     # short bars either side of a repeat, double bar or ending are pickups
     assert messages('A | ABCD EFGA | ABCD EFG :| A | ABCD EFGA | ABCD EFGA |') == []
     assert messages('A | ABCD EFGA |1 ABCD EFG :|2 ABCD EFG || A | ABCD EFGA |') == []
-    assert messages('A | ABCD EFGA | ABCD EFG |: ABCD EFGA | ABCD EFGA |') == []
+    assert messages('A | ABCD EFGA | ABCD EFG |: ABCD EFGA | ABCD EFGA :|') == []
     # but a short bar inside a section, or a long bar anywhere, is reported
     assert messages('A | ABCD EFGA | ABCD EFG | ABCD EFGA :| A |') == ['bar 3 has length 7/8, expected 1']
     assert messages('A | ABCD EFGA | ABCD EFGA2 :| A |') == ['bar 3 has length 9/8, expected 1']
