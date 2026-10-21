@@ -245,7 +245,7 @@ History and credits
 abcnotes started as [pyabc](https://github.com/campagnola/pyabc), written by
 Luke Campagnola in 2014 and released under the MIT licence as a pre-alpha.
 John McBride forked it to read the TheSession data set and fixed and
-extended it over several years. In September 2026, in
+extended it. In September 2026, in
 [issue #31](https://github.com/campagnola/pyabc/issues/31) of the original
 repository, Luke Campagnola agreed that the fork becomes the maintained
 version under a new name, published to PyPI, and that the original
